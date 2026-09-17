@@ -1,0 +1,30 @@
+# Defines the containers required for our local development environment
+services:
+
+  # PostgreSQL database used by the Product Service
+  postgres:
+    # Use the official PostgreSQL 17 image from Docker Hub
+    image: postgres:17
+
+    # Give the container a predictable name for local troubleshooting
+    container_name: ecommerce-postgres
+
+    # Environment variables used by PostgreSQL during initialization
+    environment:
+      POSTGRES_DB: ecommerce
+      POSTGRES_USER: ecommerce_user
+      POSTGRES_PASSWORD: ecommerce_password
+
+    # Map PostgreSQL's container port to our local machine
+    # host_port:container_port
+    ports:
+      - "5432:5432"
+
+    # Persist database files outside the lifecycle of the container
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+
+# Docker-managed persistent storage for PostgreSQL
+volumes:
+  postgres_data:

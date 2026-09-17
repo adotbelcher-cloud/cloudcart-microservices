@@ -1,0 +1,19 @@
+# Python virtual environments
+.venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Environment files
+# These may contain credentials or other sensitive configuration
+.env
+
+# Terraform local state and working files
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
+# VS Code local settings
+.vscode/
