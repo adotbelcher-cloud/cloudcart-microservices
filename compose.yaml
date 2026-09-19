@@ -1,6 +1,29 @@
 # Defines the containers required for our local development environment
 services:
 
+  # FastAPI Product Service
+  product-service:
+    # Build the Product Service image from its Dockerfile
+    build:
+      context: ./services/product-service
+
+    # Give the container a predictable name for local troubleshooting
+    container_name: cloudcart-product-service
+
+    # Map the Product Service port to our local machine
+    # host_port:container_port
+    ports:
+      - "8000:8000"
+
+    # Runtime configuration passed into the Product Service container
+    environment:
+      DATABASE_URL: postgresql+psycopg://ecommerce_user:ecommerce_password@postgres:5432/ecommerce
+
+    # Start PostgreSQL before starting the Product Service
+    depends_on:
+      - postgres
+
+
   # PostgreSQL database used by the Product Service
   postgres:
     # Use the official PostgreSQL 17 image from Docker Hub
@@ -25,6 +48,8 @@ services:
       - postgres_data:/var/lib/postgresql/data
 
 
-# Docker-managed persistent storage for PostgreSQL
 volumes:
   postgres_data:
+    # Reuse the PostgreSQL volume created before the project was renamed
+    external: true
+    name: aws-containerized-ecommerce_postgres_data
