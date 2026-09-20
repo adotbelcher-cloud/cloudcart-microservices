@@ -1,6 +1,5 @@
 # Defines the containers required for our local development environment
 services:
-
   # FastAPI Product Service
   product-service:
     # Build the Product Service image from its Dockerfile
@@ -19,10 +18,24 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://ecommerce_user:ecommerce_password@postgres:5432/ecommerce
 
-    # Start PostgreSQL before starting the Product Service
+    # Wait until PostgreSQL is healthy before starting the Product Service
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
 
+    # Verify that the FastAPI application is responding
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   # PostgreSQL database used by the Product Service
   postgres:
@@ -47,6 +60,11 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecommerce_user -d ecommerce"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:
