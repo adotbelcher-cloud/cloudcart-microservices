@@ -37,6 +37,37 @@ services:
       retries: 3
       start_period: 5s
 
+  # FastAPI Order Service
+  order-service:
+    # Build the Order Service image from its Dockerfile
+    build:
+      context: ./services/order-service
+
+    # Give the container a predictable name for local troubleshooting
+    container_name: cloudcart-order-service
+
+    # Map host port 8001 to port 8000 inside the container
+    ports:
+      - "8001:8000"
+
+    # Verify that the FastAPI application is responding
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+    # Runtime configuration passed into the Order Service container
+    environment:
+      PRODUCT_SERVICE_URL: http://product-service:8000
+
   # PostgreSQL database used by the Product Service
   postgres:
     # Use the official PostgreSQL 17 image from Docker Hub
