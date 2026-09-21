@@ -18,6 +18,8 @@ CloudCart is being built to develop practical experience with:
 - Docker and containerized workloads
 - Microservices architecture
 - Container networking and service discovery
+- Service-to-service communication
+- Application health checks and dependency handling
 - Amazon ECS and AWS Fargate
 - Amazon Elastic Container Registry (ECR)
 - Application Load Balancers
@@ -36,46 +38,70 @@ CloudCart is being built to develop practical experience with:
 
 CloudCart uses a lightweight e-commerce application to simulate the type of workload a cloud engineer may be responsible for deploying and operating.
 
-Application components such as the Product Service and planned Order Service provide the workload for the project. The primary engineering focus is the infrastructure surrounding those services: containerization, networking, AWS deployment, security, observability, reliability, scaling, automation, and Infrastructure as Code.
+The Product Service and Order Service provide the application workload for the project. The primary engineering focus is the infrastructure surrounding these services: containerization, networking, AWS deployment, security, observability, reliability, scaling, automation, and Infrastructure as Code.
 
-The application functionality is intentionally limited so the project can remain focused on cloud engineering rather than full-stack application development.
+Application functionality is intentionally limited so the project can remain focused on cloud engineering rather than full-stack application development.
 
 
 ## Current Architecture
 
-CloudCart currently consists of a FastAPI Product Service and PostgreSQL database running as a multi-container application using Docker Compose.
+CloudCart currently consists of two FastAPI microservices and a PostgreSQL database running as a multi-container application using Docker Compose.
 
 ```text
-                         Host
-                          |
-                          | localhost:8000
-                          v
-                   Docker Compose
-                          |
-             +------------+------------+
-             |                         |
-             v                         v
-     Product Service              PostgreSQL
-       Container                   Container
-     FastAPI :8000             PostgreSQL :5432
-             |                         |
-             | postgres:5432           |
-             +------------------------>|
-                                       |
-                                       v
-                              Persistent Docker Volume
+                              Host
+                               |
+                 +-------------+-------------+
+                 |                           |
+          localhost:8000              localhost:8001
+                 |                           |
+                 v                           v
+          Product Service              Order Service
+          FastAPI :8000                FastAPI :8000
+                 |                           |
+                 |                           |
+                 |<------ HTTP --------------+
+                 |   product-service:8000    |
+                 |                           |
+                 +------------+--------------+
+                              |
+                              | SQL
+                              v
+                         PostgreSQL
+                           :5432
+                              |
+                 +------------+------------+
+                 |                         |
+                 v                         v
+           products table             orders table
+                 |                         |
+                 +------------+------------+
+                              |
+                              v
+                    Persistent Docker Volume
 ```
 
-Docker Compose provides the shared network and service discovery used for communication between the Product Service and PostgreSQL.
+Docker Compose provides the shared network and internal DNS used by the services.
+
+The Order Service communicates with the Product Service using the Docker service name:
+
+```text
+http://product-service:8000
+```
+
+Both application services communicate with PostgreSQL using:
+
+```text
+postgres:5432
+```
+
+This allows services to communicate without depending on container IP addresses.
 
 
 ## Product Service
 
-The Product Service is a lightweight Python and FastAPI API used as the first application workload in CloudCart.
+The Product Service is a lightweight Python and FastAPI API responsible for product information, pricing, and inventory.
 
-It is responsible for basic product data operations and provides a service that can be containerized, networked, deployed, monitored, and scaled as the infrastructure portion of the project develops.
-
-### Current API Endpoints
+### API Endpoints
 
 - `GET /health`
 - `GET /products`
@@ -90,42 +116,139 @@ The service uses:
 - **psycopg** as the PostgreSQL database driver
 - **PostgreSQL** for persistent product storage
 
+Product data is stored in the PostgreSQL `products` table.
+
 The Product Service runs independently in its own Docker container.
+
+
+## Order Service
+
+The Order Service is a separate FastAPI microservice responsible for creating, storing, and retrieving orders.
+
+### API Endpoints
+
+- `GET /health`
+- `GET /orders`
+- `GET /orders/{order_id}`
+- `POST /orders`
+
+When an order is created, the Order Service:
+
+1. Receives the product ID and requested quantity.
+2. Sends an HTTP request to the Product Service.
+3. Retrieves current product information and inventory.
+4. Validates that sufficient inventory exists.
+5. Calculates the order total.
+6. Stores the order in PostgreSQL.
+7. Returns the persisted order to the client.
+
+```text
+Client
+   |
+   | POST /orders
+   v
+Order Service
+   |
+   | HTTP GET /products/{product_id}
+   v
+Product Service
+   |
+   | SQL
+   v
+PostgreSQL / products
+   |
+   v
+Product information
+   |
+   v
+Order Service
+   |
+   | Validate inventory
+   | Calculate total
+   |
+   | SQL INSERT
+   v
+PostgreSQL / orders
+```
+
+The Order Service does not directly query Product Service's product data. Product information is retrieved through the Product Service API, maintaining a service boundary between product and order responsibilities.
+
+Order records capture relevant product information such as product name and unit price at the time the order is created so historical order information is preserved if product data changes later.
+
+
+## Service-to-Service Communication
+
+CloudCart uses HTTP communication between independently running containers.
+
+Within the Docker Compose network, the Order Service reaches the Product Service using:
+
+```text
+http://product-service:8000
+```
+
+The Product Service address is supplied to the Order Service through the `PRODUCT_SERVICE_URL` environment variable rather than being hardcoded into the application.
+
+Docker's internal DNS resolves the `product-service` service name to the appropriate container.
+
+This provides a local introduction to service discovery concepts that will later be translated to AWS.
+
+
+## Dependency Failure Handling
+
+The Order Service has been tested against Product Service outages.
+
+If Product Service becomes unavailable while Order Service remains healthy, the HTTP client raises a connection exception. Order Service catches the dependency failure and returns:
+
+```text
+HTTP 503 Service Unavailable
+```
+
+with:
+
+```json
+{
+  "detail": "Product Service unavailable"
+}
+```
+
+Once Product Service becomes available again, Order Service can resume communicating with it without requiring an Order Service restart.
+
+This demonstrates the distinction between:
+
+```text
+Application healthy
+        vs.
+Application dependency healthy
+```
+
+and introduces failure handling for distributed applications.
 
 
 ## Database
 
 PostgreSQL 17 currently runs as a Docker container managed through Docker Compose.
 
-The Product Service communicates with PostgreSQL using SQLAlchemy and psycopg.
-
-Database configuration is supplied to the Product Service at runtime rather than being embedded in the container image.
-
-Within the Docker Compose environment, the Product Service reaches PostgreSQL using Docker service discovery:
+The database currently contains two application tables:
 
 ```text
-postgres:5432
+ecommerce
+|
++-- products
+|     |
+|     +-- Product Service ownership
+|
++-- orders
+      |
+      +-- Order Service ownership
 ```
 
-This allows the application to communicate with the database without depending on container IP addresses.
+Both services currently use the same PostgreSQL instance for local development, but each service interacts only with the data it owns.
 
+The Product Service owns product data.
 
-## Containerization
+The Order Service owns order data and retrieves product information through the Product Service API rather than querying the `products` table directly.
 
-The Product Service is packaged as a Docker image using a service-specific Dockerfile.
-
-The image:
-
-- Uses a Python 3.12 slim base image
-- Installs application dependencies from `requirements.txt`
-- Copies the application source into the image
-- Runs the FastAPI application using Uvicorn
-- Listens on container port `8000`
-- Receives database configuration at runtime
-
-A `.dockerignore` file prevents unnecessary local files, development environments, and environment configuration from entering the Docker build context.
-
-Docker Compose currently manages both the Product Service and PostgreSQL as a local multi-container environment.
+Both services communicate with PostgreSQL using SQLAlchemy and psycopg.
 
 
 ## Persistent Storage
@@ -134,18 +257,19 @@ PostgreSQL data is stored using a Docker-managed persistent volume.
 
 This separates the database data lifecycle from the PostgreSQL container lifecycle.
 
-The persistence behavior has been tested by removing the original PostgreSQL container, creating a replacement container, reattaching the existing volume, and verifying that previously stored product data remained available.
-
 ```text
+Application Containers
+        |
+        | can be rebuilt/replaced
+        v
 PostgreSQL Container
         |
         v
-Persistent Volume
+Persistent Docker Volume
         |
-        | Container removed/replaced
-        |
+        | container removed/replaced
         v
-Persistent Volume remains
+Persistent Docker Volume remains
         |
         v
 New PostgreSQL Container
@@ -154,100 +278,209 @@ New PostgreSQL Container
 Existing data remains available
 ```
 
+Persistence has been tested by replacing the PostgreSQL container and verifying that previously stored data remained available.
+
+Order persistence has also been verified by creating an order through the Order Service API and querying the stored record directly from PostgreSQL.
+
+
+## Containerization
+
+The Product Service and Order Service are independently packaged as Docker images using service-specific Dockerfiles.
+
+Each application image:
+
+- Uses a Python 3.12 slim base image
+- Installs dependencies from `requirements.txt`
+- Copies application source code into the image
+- Runs the FastAPI application using Uvicorn
+- Listens on container port `8000`
+- Receives environment-specific configuration at runtime
+
+Each service also uses a `.dockerignore` file to prevent unnecessary local files, virtual environments, source-control metadata, and local environment configuration from entering the Docker build context.
+
+Docker Compose manages the complete local multi-container environment.
+
+
+## Container Health and Readiness
+
+Health checks are configured for the application services and PostgreSQL.
+
+Product Service and Order Service health checks call their respective:
+
+```text
+GET /health
+```
+
+endpoints.
+
+PostgreSQL readiness is checked using:
+
+```text
+pg_isready
+```
+
+The Product Service is configured to wait for PostgreSQL to become healthy before starting.
+
+Health-check behavior has also been tested by deliberately configuring an invalid health endpoint, observing the container become unhealthy, restoring the correct endpoint, and verifying recovery.
+
+These checks introduce concepts that will later map to ECS and Application Load Balancer health monitoring.
+
 
 ## Runtime Configuration
 
-Application configuration is externalized from the Product Service container image.
+Application configuration is externalized from the container images.
 
-Locally, the database connection is supplied using the `DATABASE_URL` environment variable.
-
-The Product Service expects a PostgreSQL connection in the following general form:
+The Product Service receives:
 
 ```text
-postgresql+psycopg://<user>:<password>@<database-host>:5432/<database>
+DATABASE_URL
 ```
 
-The container does not depend on a locally embedded `.env` file when running through Docker Compose. Docker Compose supplies the required runtime configuration to the service.
+The Order Service receives:
 
-This design prepares the application for AWS, where environment-specific configuration and sensitive values can be supplied through AWS services rather than embedded in source code or container images.
+```text
+DATABASE_URL
+PRODUCT_SERVICE_URL
+```
+
+Within Docker Compose, database connections use the general format:
+
+```text
+postgresql+psycopg://<user>:<password>@postgres:5432/<database>
+```
+
+The Order Service reaches Product Service through:
+
+```text
+http://product-service:8000
+```
+
+This allows the same application images to receive environment-specific configuration without rebuilding the images.
+
+The current local environment uses development database credentials. The AWS deployment will move sensitive configuration to appropriate AWS configuration and secrets-management services.
 
 
 ## Current Progress
 
 ### Application Foundation
 
-- Created the CloudCart repository and service structure
+- Created the CloudCart repository and microservice structure
 - Built the Product Service with Python and FastAPI
-- Implemented API request validation with Pydantic
 - Implemented product creation and retrieval endpoints
+- Added Pydantic request validation
 - Added SQLAlchemy ORM integration
 - Added psycopg PostgreSQL connectivity
-- Created the PostgreSQL `products` table
 - Migrated product storage from application memory to PostgreSQL
+- Built the Order Service with Python and FastAPI
+- Implemented order creation and retrieval endpoints
+- Implemented persistent order storage
+- Added product inventory validation during order creation
 
 ### Containerization
 
 - Installed and configured Docker Desktop with WSL2 integration
-- Created a Dockerfile for the Product Service
-- Built and tested the Product Service Docker image
-- Added `.dockerignore` to control the Docker build context
+- Created independent Dockerfiles for Product Service and Order Service
+- Built and tested both application images
+- Added `.dockerignore` files to control Docker build contexts
 - Verified Docker build layer caching
-- Verified application configuration is supplied at runtime rather than embedded in the image
+- Externalized runtime configuration from container images
 
 ### Multi-Container Environment
 
 - Deployed PostgreSQL 17 using Docker
 - Configured persistent PostgreSQL storage
-- Configured Docker Compose to manage the Product Service and PostgreSQL
-- Created a shared Docker network for service communication
-- Configured container-to-container communication using Docker service discovery
-- Configured the Product Service to connect to `postgres:5432`
-- Verified the containerized Product Service can query PostgreSQL
-- Verified PostgreSQL data persists across container replacement
+- Configured Docker Compose to manage Product Service, Order Service, and PostgreSQL
+- Created a shared Docker network
+- Configured Docker DNS-based service discovery
+- Configured Product Service to connect to `postgres:5432`
+- Configured Order Service to connect to `postgres:5432`
+- Configured Order Service to communicate with `product-service:8000`
+- Verified Product Service-to-PostgreSQL connectivity
+- Verified Order Service-to-Product Service communication
+- Verified Order Service-to-PostgreSQL persistence
+- Verified PostgreSQL data survives container replacement
+
+### Reliability and Failure Testing
+
+- Added application container health checks
+- Added PostgreSQL readiness checks
+- Tested healthy and unhealthy container states
+- Tested Product Service dependency failure
+- Added HTTP timeout handling for service-to-service requests
+- Added controlled `503 Service Unavailable` responses when Product Service cannot be reached
+- Verified Order Service automatically resumes communication after Product Service recovery
 
 
 ## Local Development
 
-The current local environment requires:
+The local environment requires:
 
 - Docker Desktop
 - Docker Compose
 - WSL2/Linux environment when developing on Windows
 
-From the repository root, the current application stack can be started with:
+From the repository root, start the application stack with:
 
 ```bash
-docker compose up
+docker compose up -d
 ```
 
-Once running, the Product Service is available at:
+Check container health:
+
+```bash
+docker compose ps
+```
+
+The Product Service is available at:
 
 ```text
 http://localhost:8000
 ```
 
-The FastAPI interactive API documentation is available at:
+Product Service API documentation:
 
 ```text
 http://localhost:8000/docs
 ```
 
-The health endpoint can be tested with:
+The Order Service is available at:
+
+```text
+http://localhost:8001
+```
+
+Order Service API documentation:
+
+```text
+http://localhost:8001/docs
+```
+
+Product Service health:
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-Product data can be retrieved with:
+Order Service health:
+
+```bash
+curl http://localhost:8001/health
+```
+
+Retrieve products:
 
 ```bash
 curl http://localhost:8000/products
 ```
 
+Retrieve orders:
 
-## Planned Microservices
+```bash
+curl http://localhost:8001/orders
+```
 
-CloudCart will expand beyond the Product Service as the infrastructure develops.
+
+## Service Responsibilities
 
 ### Product Service
 
@@ -256,18 +489,23 @@ Responsible for:
 - Product information
 - Pricing
 - Inventory
+- Persistent product storage
 
 ### Order Service
 
-Planned responsibilities:
+Responsible for:
 
-- Create orders
-- Retrieve order information
-- Communicate with the Product Service
-- Persist order data
-- Publish asynchronous work to Amazon SQS
+- Creating orders
+- Retrieving orders
+- Communicating with Product Service
+- Validating available inventory
+- Calculating order totals
+- Persisting order data
+- Handling Product Service availability failures
 
-### Worker Service
+### Worker Service — Planned
+
+The next application component will support asynchronous order processing.
 
 Planned responsibilities:
 
@@ -275,35 +513,41 @@ Planned responsibilities:
 - Process asynchronous order tasks
 - Update order status
 
-These services will provide additional workloads for implementing service-to-service networking, asynchronous messaging, observability, scaling, and cloud deployment patterns.
+The Worker Service and SQS will provide a workload for implementing asynchronous messaging, IAM permissions, observability, scaling, and failure handling.
 
 
 ## Planned AWS Architecture
 
-The local Docker environment will eventually be translated into AWS infrastructure.
+The local Docker environment will be translated into AWS infrastructure.
 
 ```text
                               Internet
                                  |
                                  v
-                    Application Load Balancer
+                      Application Load Balancer
                                  |
                                  v
-                       Amazon ECS / Fargate
+                         ECS / Fargate
+                       Private App Subnets
                                  |
                     +------------+------------+
                     |                         |
                     v                         v
              Product Service            Order Service
                     |                         |
-                    |                         |
                     |                         +-------> Amazon SQS
                     |                                      |
-                    v                                      v
-          Amazon RDS PostgreSQL                      Worker Service
+                    |                                      v
+                    |                                Worker Service
+                    |                                      |
+                    +------------------+-------------------+
+                                       |
+                                       v
+                            Amazon RDS PostgreSQL
+                           Private Database Subnets
 ```
 
-The production-oriented AWS design will expand this architecture with VPC networking, private subnets, security groups, IAM roles, monitoring, secrets management, scaling, and automated deployment.
+The AWS environment will introduce VPC networking, private subnets, security groups, IAM roles, ECR, RDS, SQS, CloudWatch, secrets management, scaling, and automated deployment.
 
 
 ## Planned AWS Networking
@@ -350,34 +594,35 @@ The local environment is intentionally designed to introduce concepts that will 
 | Docker container | ECS task |
 | Docker Compose service | ECS service |
 | Docker networking | VPC networking |
+| Docker service discovery | AWS service discovery |
 | Local port publishing | Application Load Balancer / target groups |
 | PostgreSQL container | Amazon RDS PostgreSQL |
 | Docker volume | RDS-managed persistent storage |
 | Runtime environment variables | ECS configuration / AWS Secrets Manager |
+| Container health checks | ECS / ALB health checks |
 | Container logs | Amazon CloudWatch Logs |
 
 
 ## Next Steps
 
-The next phase will improve container reliability and expand CloudCart toward a multi-service architecture.
+The local containerized microservices foundation is now functional. The next phase will begin translating CloudCart into AWS infrastructure.
 
 Planned work includes:
 
-- Add PostgreSQL health checks
-- Add service readiness dependencies
-- Improve local configuration and secret handling
-- Add the Order Service
-- Implement service-to-service communication
-- Add asynchronous order processing
-- Introduce Amazon SQS
-- Build the AWS VPC architecture
+- Design the AWS VPC architecture
+- Create public, private application, and private database subnets
+- Configure route tables, Internet Gateway, and NAT connectivity
+- Implement security groups between the ALB, ECS services, and RDS
 - Create Amazon ECR repositories
 - Push CloudCart container images to ECR
-- Deploy services to Amazon ECS using AWS Fargate
-- Migrate PostgreSQL to Amazon RDS
+- Deploy Product Service and Order Service to Amazon ECS using AWS Fargate
 - Configure Application Load Balancer routing
-- Implement AWS security groups and IAM roles
+- Migrate PostgreSQL to Amazon RDS
+- Implement AWS service discovery between application services
+- Externalize sensitive configuration using AWS secrets management
 - Add Amazon CloudWatch logging and monitoring
+- Introduce Amazon SQS
+- Build the Worker Service for asynchronous processing
 - Configure ECS Auto Scaling
 - Implement AWS infrastructure with Terraform
 - Build CI/CD workflows with GitHub Actions
@@ -394,8 +639,18 @@ cloudcart-microservices/
 |
 └── services/
     |
-    └── product-service/
-        ├── README.md
+    ├── product-service/
+    |   ├── Dockerfile
+    |   ├── .dockerignore
+    |   ├── requirements.txt
+    |   |
+    |   └── app/
+    |       ├── __init__.py
+    |       ├── main.py
+    |       ├── database.py
+    |       └── models.py
+    |
+    └── order-service/
         ├── Dockerfile
         ├── .dockerignore
         ├── requirements.txt
@@ -410,21 +665,22 @@ cloudcart-microservices/
 
 ## Technologies
 
-**Application Workload**
+### Application Workload
 
 - Python
 - FastAPI
 - Pydantic
 - SQLAlchemy
 - psycopg
+- HTTPX
 - PostgreSQL
 
-**Containers**
+### Containers
 
 - Docker
 - Docker Compose
 
-**AWS - Planned / In Progress**
+### AWS — Planned / In Progress
 
 - Amazon ECR
 - Amazon ECS
@@ -437,7 +693,7 @@ cloudcart-microservices/
 - AWS IAM
 - Amazon VPC
 
-**Infrastructure & Automation**
+### Infrastructure & Automation
 
 - Terraform
 - Git
