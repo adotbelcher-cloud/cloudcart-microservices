@@ -67,6 +67,7 @@ services:
     # Runtime configuration passed into the Order Service container
     environment:
       PRODUCT_SERVICE_URL: http://product-service:8000
+      DATABASE_URL: postgresql+psycopg://ecommerce_user:ecommerce_password@postgres:5432/ecommerce
 
   # PostgreSQL database used by the Product Service
   postgres:
