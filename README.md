@@ -52,12 +52,11 @@ CloudCart currently consists of two FastAPI microservices and a PostgreSQL datab
                                |
                  +-------------+-------------+
                  |                           |
-          localhost:8000              localhost:8001
+           localhost:8000              localhost:8001
                  |                           |
                  v                           v
-          Product Service              Order Service
-          FastAPI :8000                FastAPI :8000
-                 |                           |
+           Product Service              Order Service
+           FastAPI :8000                FastAPI :8000
                  |                           |
                  |<------ HTTP --------------+
                  |   product-service:8000    |
@@ -66,18 +65,18 @@ CloudCart currently consists of two FastAPI microservices and a PostgreSQL datab
                               |
                               | SQL
                               v
-                         PostgreSQL
-                           :5432
+                          PostgreSQL
+                            :5432
                               |
                  +------------+------------+
                  |                         |
                  v                         v
-           products table             orders table
+            products table             orders table
                  |                         |
                  +------------+------------+
                               |
                               v
-                    Persistent Docker Volume
+                     Persistent Docker Volume
 ```
 
 Docker Compose provides the shared network and internal DNS used by the services.
@@ -410,6 +409,26 @@ The current local environment uses development database credentials. The AWS dep
 - Added controlled `503 Service Unavailable` responses when Product Service cannot be reached
 - Verified Order Service automatically resumes communication after Product Service recovery
 
+### AWS Infrastructure — Networking
+
+- Created Terraform configuration for the CloudCart AWS network
+- Configured the AWS provider for `us-east-1`
+- Designed a dedicated `10.0.0.0/16` VPC
+- Designed infrastructure across two Availability Zones
+- Created two public subnets
+- Created two private application subnets for ECS/Fargate
+- Created two private database subnets for Amazon RDS
+- Configured an Internet Gateway for public connectivity
+- Configured a public route table for internet-facing resources
+- Configured a NAT Gateway and Elastic IP for private application egress
+- Configured private application routing through the NAT Gateway
+- Added route table associations for public and private application subnets
+- Added Terraform outputs for key networking resources
+- Validated the Terraform configuration with `terraform validate`
+- Reviewed the infrastructure execution plan with `terraform plan`
+
+> The AWS networking infrastructure is currently defined in Terraform but has not yet been provisioned.
+
 
 ## Local Development
 
@@ -524,54 +543,89 @@ The local Docker environment will be translated into AWS infrastructure.
                               Internet
                                  |
                                  v
-                      Application Load Balancer
+                       Application Load Balancer
+                         Public Subnets A/B
                                  |
                                  v
-                         ECS / Fargate
-                       Private App Subnets
+                           ECS / Fargate
+                      Private App Subnets A/B
                                  |
-                    +------------+------------+
-                    |                         |
-                    v                         v
-             Product Service            Order Service
-                    |                         |
-                    |                         +-------> Amazon SQS
-                    |                                      |
-                    |                                      v
-                    |                                Worker Service
-                    |                                      |
-                    +------------------+-------------------+
-                                       |
-                                       v
-                            Amazon RDS PostgreSQL
-                           Private Database Subnets
+                     +-----------+-----------+
+                     |                       |
+                     v                       v
+              Product Service          Order Service
+                     |                       |
+                     |                       +-------> Amazon SQS
+                     |                                  |
+                     |                                  v
+                     |                            Worker Service
+                     |                                  |
+                     +------------------+---------------+
+                                        |
+                                        v
+                              Amazon RDS PostgreSQL
+                           Private Database Subnets A/B
 ```
 
-The AWS environment will introduce VPC networking, private subnets, security groups, IAM roles, ECR, RDS, SQS, CloudWatch, secrets management, scaling, and automated deployment.
+The AWS environment will introduce private ECS workloads, security groups, IAM roles, ECR, RDS, SQS, CloudWatch, secrets management, scaling, and automated deployment.
 
 
-## Planned AWS Networking
+## AWS Network Design
 
-The target network architecture will separate public-facing infrastructure from application and database workloads.
+The initial AWS network architecture has been defined with Terraform.
 
 ```text
-Internet
-   |
-   | HTTPS
-   v
-Application Load Balancer
-Public Subnets
-   |
-   | Application traffic
-   v
-ECS / Fargate Services
-Private Application Subnets
-   |
-   | PostgreSQL :5432
-   v
-Amazon RDS PostgreSQL
-Private Database Subnets
+                          Internet
+                             |
+                             v
+                      Internet Gateway
+                             |
+                +------------+------------+
+                |                         |
+        Public Subnet A             Public Subnet B
+         10.0.1.0/24                 10.0.2.0/24
+         us-east-1a                  us-east-1b
+                |
+          NAT Gateway
+                |
+                v
+       Private App Route Table
+                |
+        +-------+-------+
+        |               |
+        v               v
+Private App A      Private App B
+10.0.11.0/24       10.0.12.0/24
+ us-east-1a         us-east-1b
+        |               |
+        +-------+-------+
+                |
+                v
+          ECS / Fargate
+                |
+                v
+       Private DB Subnets
+        /             \
+       v               v
+Private DB A       Private DB B
+10.0.21.0/24       10.0.22.0/24
+ us-east-1a         us-east-1b
+                |
+                v
+        Amazon RDS PostgreSQL
 ```
+
+The VPC uses the CIDR range:
+
+```text
+10.0.0.0/16
+```
+
+The public subnets route internet-bound traffic directly through the Internet Gateway.
+
+The private application subnets route outbound internet traffic through a NAT Gateway located in Public Subnet A. A single NAT Gateway is used for the development environment to reduce infrastructure cost.
+
+The private database subnets are isolated from direct internet routing.
 
 Planned security controls include:
 
@@ -586,7 +640,7 @@ Planned security controls include:
 
 ## Local-to-AWS Mapping
 
-The local environment is intentionally designed to introduce concepts that will later map to AWS services.
+The local environment is intentionally designed to introduce concepts that later map to AWS services.
 
 | Local Environment | AWS Target |
 |---|---|
@@ -603,28 +657,64 @@ The local environment is intentionally designed to introduce concepts that will 
 | Container logs | Amazon CloudWatch Logs |
 
 
+## Infrastructure as Code
+
+CloudCart AWS infrastructure is being defined using Terraform.
+
+The current Terraform configuration includes:
+
+- AWS provider configuration
+- Availability Zone discovery
+- VPC
+- Public subnets across two Availability Zones
+- Private application subnets across two Availability Zones
+- Private database subnets across two Availability Zones
+- Internet Gateway
+- Elastic IP
+- NAT Gateway
+- Public route table
+- Private application route table
+- Route table associations
+- Terraform outputs
+- Shared resource tagging
+
+Terraform configuration is formatted and validated using:
+
+```bash
+terraform fmt
+terraform validate
+```
+
+Infrastructure changes are reviewed before deployment using:
+
+```bash
+terraform plan
+```
+
+The network infrastructure has intentionally not yet been provisioned so billable resources such as the NAT Gateway are not left running unnecessarily during development.
+
+
 ## Next Steps
 
-The local containerized microservices foundation is now functional. The next phase will begin translating CloudCart into AWS infrastructure.
+The local containerized application foundation is functional, and the initial AWS network infrastructure has been defined with Terraform.
 
 Planned work includes:
 
-- Design the AWS VPC architecture
-- Create public, private application, and private database subnets
-- Configure route tables, Internet Gateway, and NAT connectivity
-- Implement security groups between the ALB, ECS services, and RDS
 - Create Amazon ECR repositories
-- Push CloudCart container images to ECR
-- Deploy Product Service and Order Service to Amazon ECS using AWS Fargate
+- Implement security groups between the ALB, ECS services, and RDS
+- Define ECS cluster, task definitions, and services
 - Configure Application Load Balancer routing
-- Migrate PostgreSQL to Amazon RDS
-- Implement AWS service discovery between application services
+- Define Amazon RDS PostgreSQL infrastructure
 - Externalize sensitive configuration using AWS secrets management
+- Review the complete Terraform execution plan and infrastructure cost
+- Deploy the AWS infrastructure
+- Push CloudCart container images to Amazon ECR
+- Deploy Product Service and Order Service to Amazon ECS using AWS Fargate
+- Implement AWS service discovery between application services
 - Add Amazon CloudWatch logging and monitoring
 - Introduce Amazon SQS
 - Build the Worker Service for asynchronous processing
 - Configure ECS Auto Scaling
-- Implement AWS infrastructure with Terraform
 - Build CI/CD workflows with GitHub Actions
 - Perform infrastructure and container security hardening
 
@@ -636,6 +726,17 @@ cloudcart-microservices/
 |
 ├── README.md
 ├── compose.yaml
+├── .gitignore
+|
+├── terraform/
+|   ├── data.tf
+|   ├── internet-gateway.tf
+|   ├── locals.tf
+|   ├── nat-gateway.tf
+|   ├── outputs.tf
+|   ├── providers.tf
+|   ├── route-tables.tf
+|   └── vpc.tf
 |
 └── services/
     |
@@ -682,6 +783,7 @@ cloudcart-microservices/
 
 ### AWS — Planned / In Progress
 
+- Amazon VPC
 - Amazon ECR
 - Amazon ECS
 - AWS Fargate
@@ -691,7 +793,6 @@ cloudcart-microservices/
 - Amazon CloudWatch
 - AWS Secrets Manager
 - AWS IAM
-- Amazon VPC
 
 ### Infrastructure & Automation
 
