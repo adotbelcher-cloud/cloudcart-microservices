@@ -43,40 +43,40 @@ The Product Service and Order Service provide the application workload for the p
 Application functionality is intentionally limited so the project can remain focused on cloud engineering rather than full-stack application development.
 
 
-## Current Architecture
+## Current Local Architecture
 
 CloudCart currently consists of two FastAPI microservices and a PostgreSQL database running as a multi-container application using Docker Compose.
 
 ```text
                               Host
                                |
-                 +-------------+-------------+
-                 |                           |
-           localhost:8000              localhost:8001
-                 |                           |
-                 v                           v
-           Product Service              Order Service
-           FastAPI :8000                FastAPI :8000
-                 |                           |
-                 |<------ HTTP --------------+
-                 |   product-service:8000    |
-                 |                           |
-                 +------------+--------------+
-                              |
-                              | SQL
-                              v
-                          PostgreSQL
-                            :5432
-                              |
-                 +------------+------------+
-                 |                         |
-                 v                         v
-            products table             orders table
-                 |                         |
-                 +------------+------------+
-                              |
-                              v
-                     Persistent Docker Volume
+                  +------------+-------------+
+                  |                          |
+             localhost:8000            localhost:8001
+                  |                          |
+                  v                          v
+            Product Service             Order Service
+            FastAPI :8000               FastAPI :8000
+                  |                          |
+                  |<------ HTTP -------------+
+                  |   product-service:8000
+                  |
+                  +------------+-------------+
+                               |
+                               | SQL
+                               v
+                           PostgreSQL
+                             :5432
+                               |
+                  +------------+------------+
+                  |                         |
+                  v                         v
+             products table             orders table
+                  |                         |
+                  +------------+------------+
+                               |
+                               v
+                      Persistent Docker Volume
 ```
 
 Docker Compose provides the shared network and internal DNS used by the services.
@@ -225,9 +225,9 @@ and introduces failure handling for distributed applications.
 
 ## Database
 
-PostgreSQL 17 currently runs as a Docker container managed through Docker Compose.
+PostgreSQL 17 currently runs locally as a Docker container managed through Docker Compose.
 
-The database currently contains two application tables:
+The local database contains two application tables:
 
 ```text
 ecommerce
@@ -249,10 +249,12 @@ The Order Service owns order data and retrieves product information through the 
 
 Both services communicate with PostgreSQL using SQLAlchemy and psycopg.
 
+For AWS, an Amazon RDS PostgreSQL instance has been defined in Terraform to replace the local PostgreSQL container as the managed database platform.
+
 
 ## Persistent Storage
 
-PostgreSQL data is stored using a Docker-managed persistent volume.
+PostgreSQL data in the local environment is stored using a Docker-managed persistent volume.
 
 This separates the database data lifecycle from the PostgreSQL container lifecycle.
 
@@ -281,6 +283,8 @@ Persistence has been tested by replacing the PostgreSQL container and verifying 
 
 Order persistence has also been verified by creating an order through the Order Service API and querying the stored record directly from PostgreSQL.
 
+In AWS, persistent database storage will be managed by Amazon RDS rather than a Docker volume.
+
 
 ## Containerization
 
@@ -299,6 +303,8 @@ Each service also uses a `.dockerignore` file to prevent unnecessary local files
 
 Docker Compose manages the complete local multi-container environment.
 
+Amazon ECR repositories have also been defined in Terraform for storing the Product Service and Order Service container images when the AWS environment is deployed.
+
 
 ## Container Health and Readiness
 
@@ -312,24 +318,34 @@ GET /health
 
 endpoints.
 
-PostgreSQL readiness is checked using:
+PostgreSQL readiness is checked locally using:
 
 ```text
 pg_isready
 ```
 
-The Product Service is configured to wait for PostgreSQL to become healthy before starting.
+The Product Service is configured to wait for PostgreSQL to become healthy before starting in the local Docker environment.
 
 Health-check behavior has also been tested by deliberately configuring an invalid health endpoint, observing the container become unhealthy, restoring the correct endpoint, and verifying recovery.
 
-These checks introduce concepts that will later map to ECS and Application Load Balancer health monitoring.
+The AWS infrastructure extends this concept through an Application Load Balancer target group configured to check:
+
+```text
+GET /health
+```
+
+on the Product Service.
+
+This allows unhealthy ECS targets to be detected before normal application traffic is routed to them.
 
 
 ## Runtime Configuration
 
 Application configuration is externalized from the container images.
 
-The Product Service receives:
+### Local Development
+
+The Product Service can receive:
 
 ```text
 DATABASE_URL
@@ -354,9 +370,33 @@ The Order Service reaches Product Service through:
 http://product-service:8000
 ```
 
-This allows the same application images to receive environment-specific configuration without rebuilding the images.
+### AWS Runtime Configuration
 
-The current local environment uses development database credentials. The AWS deployment will move sensitive configuration to appropriate AWS configuration and secrets-management services.
+The Product Service database configuration has been updated to support both local and AWS environments.
+
+When `DATABASE_URL` is available, the application continues to use the complete connection string. This preserves the existing local Docker workflow.
+
+When `DATABASE_URL` is not supplied, the Product Service can build the connection string from:
+
+```text
+DB_HOST
+DB_PORT
+DB_NAME
+DB_USER
+DB_PASSWORD
+```
+
+For the AWS environment:
+
+- `DB_HOST` will come from the Amazon RDS endpoint
+- `DB_PORT` will come from the RDS PostgreSQL port
+- `DB_NAME` identifies the CloudCart database
+- `DB_USER` will be injected from AWS Secrets Manager
+- `DB_PASSWORD` will be injected from AWS Secrets Manager
+
+The application then constructs the SQLAlchemy PostgreSQL connection URL at runtime.
+
+This allows the same application image to run across local and AWS environments without embedding environment-specific database configuration or credentials into the image.
 
 
 ## Current Progress
@@ -375,6 +415,7 @@ The current local environment uses development database credentials. The AWS dep
 - Implemented persistent order storage
 - Added product inventory validation during order creation
 
+
 ### Containerization
 
 - Installed and configured Docker Desktop with WSL2 integration
@@ -384,9 +425,10 @@ The current local environment uses development database credentials. The AWS dep
 - Verified Docker build layer caching
 - Externalized runtime configuration from container images
 
+
 ### Multi-Container Environment
 
-- Deployed PostgreSQL 17 using Docker
+- Deployed PostgreSQL 17 locally using Docker
 - Configured persistent PostgreSQL storage
 - Configured Docker Compose to manage Product Service, Order Service, and PostgreSQL
 - Created a shared Docker network
@@ -399,6 +441,7 @@ The current local environment uses development database credentials. The AWS dep
 - Verified Order Service-to-PostgreSQL persistence
 - Verified PostgreSQL data survives container replacement
 
+
 ### Reliability and Failure Testing
 
 - Added application container health checks
@@ -409,25 +452,148 @@ The current local environment uses development database credentials. The AWS dep
 - Added controlled `503 Service Unavailable` responses when Product Service cannot be reached
 - Verified Order Service automatically resumes communication after Product Service recovery
 
+
 ### AWS Infrastructure — Networking
 
-- Created Terraform configuration for the CloudCart AWS network
 - Configured the AWS provider for `us-east-1`
 - Designed a dedicated `10.0.0.0/16` VPC
 - Designed infrastructure across two Availability Zones
-- Created two public subnets
-- Created two private application subnets for ECS/Fargate
-- Created two private database subnets for Amazon RDS
-- Configured an Internet Gateway for public connectivity
-- Configured a public route table for internet-facing resources
+- Defined two public subnets
+- Defined two private application subnets for ECS/Fargate
+- Defined two private database subnets for Amazon RDS
+- Configured an Internet Gateway
+- Configured a public route table
 - Configured a NAT Gateway and Elastic IP for private application egress
 - Configured private application routing through the NAT Gateway
 - Added route table associations for public and private application subnets
+- Kept private database subnets isolated from general internet routing
 - Added Terraform outputs for key networking resources
-- Validated the Terraform configuration with `terraform validate`
-- Reviewed the infrastructure execution plan with `terraform plan`
 
-> The AWS networking infrastructure is currently defined in Terraform but has not yet been provisioned.
+
+### AWS Infrastructure — Container Registry
+
+- Defined an Amazon ECR repository for Product Service
+- Defined an Amazon ECR repository for Order Service
+- Enabled image scanning on push
+- Configured shared Terraform resource tags
+
+
+### AWS Infrastructure — Security Groups
+
+Defined a tiered network security model:
+
+```text
+Internet
+   |
+   | TCP 80
+   v
+ALB Security Group
+   |
+   | TCP 8000
+   v
+ECS Security Group
+   |
+   | TCP 5432
+   v
+RDS Security Group
+```
+
+Current security controls include:
+
+- ALB accepts HTTP traffic from the internet on port `80`
+- ECS application traffic is restricted to traffic originating from the ALB security group
+- RDS PostgreSQL traffic is restricted to traffic originating from the ECS security group
+- ECS tasks are configured without public IP addresses
+- RDS is configured as not publicly accessible
+
+
+### AWS Infrastructure — IAM
+
+- Defined an ECS task execution IAM role
+- Configured the ECS Tasks service as the trusted principal
+- Attached the AWS-managed `AmazonECSTaskExecutionRolePolicy`
+- Added least-privilege access to retrieve the CloudCart RDS-managed database secret
+- Restricted Secrets Manager access to the specific RDS-managed secret
+
+The ECS task execution role is intended to support infrastructure-level actions such as:
+
+- Pulling container images from Amazon ECR
+- Sending container logs to Amazon CloudWatch
+- Retrieving configured secrets from AWS Secrets Manager
+
+
+### AWS Infrastructure — Observability
+
+- Defined a CloudWatch log group for Product Service
+- Defined a CloudWatch log group for Order Service
+- Configured seven-day log retention for the development environment
+- Configured the Product Service task definition to use the `awslogs` logging driver
+
+
+### AWS Infrastructure — ECS/Fargate
+
+- Defined the CloudCart ECS cluster
+- Defined the Product Service Fargate task definition
+- Configured Fargate compatibility
+- Configured `awsvpc` networking
+- Configured Product Service CPU and memory allocation
+- Connected the Product Service task definition to its ECR repository
+- Exposed container port `8000`
+- Connected Product Service container logging to CloudWatch
+- Associated the ECS task execution role
+- Defined the Product Service ECS service
+- Configured a desired task count of one for the development environment
+- Configured Product Service tasks to run in private application subnets
+- Attached the ECS security group
+- Disabled public IP assignment for Product Service tasks
+
+
+### AWS Infrastructure — Application Load Balancer
+
+- Defined an internet-facing Application Load Balancer
+- Placed the ALB across both public subnets
+- Attached the ALB security group
+- Defined a Product Service target group
+- Configured IP-based targets for Fargate
+- Configured Product Service traffic on port `8000`
+- Configured `/health` target health checks
+- Defined an HTTP listener on port `80`
+- Configured the listener to forward traffic to the Product Service target group
+- Connected the Product Service ECS service to the target group
+
+
+### AWS Infrastructure — RDS PostgreSQL
+
+- Defined an RDS DB subnet group using both private database subnets
+- Defined an Amazon RDS PostgreSQL instance
+- Configured a small development-oriented database instance
+- Configured GP3 database storage
+- Disabled public database accessibility
+- Attached the RDS security group
+- Disabled Multi-AZ deployment for the development environment
+- Configured a short development backup-retention period
+- Configured RDS-managed master credentials
+- Integrated the RDS-managed secret with the ECS execution role
+- Configured the Product Service task definition to receive RDS connection information
+- Configured sensitive database credentials to be injected from AWS Secrets Manager
+
+
+### Terraform Validation
+
+Terraform configuration is regularly formatted and validated using:
+
+```bash
+terraform fmt
+terraform validate
+```
+
+Infrastructure changes are reviewed using:
+
+```bash
+terraform plan
+```
+
+> **Important:** The AWS infrastructure is currently defined in Terraform but has not yet been provisioned. This avoids leaving billable development resources such as the NAT Gateway, Application Load Balancer, ECS workloads, and RDS database running while the infrastructure design is still being completed.
 
 
 ## Local Development
@@ -442,6 +608,12 @@ From the repository root, start the application stack with:
 
 ```bash
 docker compose up -d
+```
+
+To rebuild application images after source-code changes:
+
+```bash
+docker compose up -d --build
 ```
 
 Check container health:
@@ -498,6 +670,14 @@ Retrieve orders:
 curl http://localhost:8001/orders
 ```
 
+Stop the local application:
+
+```bash
+docker compose down
+```
+
+The PostgreSQL Docker volume remains available after the application containers are stopped.
+
 
 ## Service Responsibilities
 
@@ -509,6 +689,7 @@ Responsible for:
 - Pricing
 - Inventory
 - Persistent product storage
+
 
 ### Order Service
 
@@ -522,9 +703,10 @@ Responsible for:
 - Persisting order data
 - Handling Product Service availability failures
 
+
 ### Worker Service — Planned
 
-The next application component will support asynchronous order processing.
+A future Worker Service will support asynchronous order processing.
 
 Planned responsibilities:
 
@@ -535,84 +717,93 @@ Planned responsibilities:
 The Worker Service and SQS will provide a workload for implementing asynchronous messaging, IAM permissions, observability, scaling, and failure handling.
 
 
-## Planned AWS Architecture
+## AWS Architecture
 
-The local Docker environment will be translated into AWS infrastructure.
+The local Docker environment is being translated into the following AWS architecture:
 
 ```text
                               Internet
                                  |
+                                 | HTTP :80
                                  v
-                       Application Load Balancer
-                         Public Subnets A/B
+                    Application Load Balancer
+                       Public Subnets A/B
+                                 |
+                                 | HTTP :8000
+                                 v
+                        Product Target Group
                                  |
                                  v
                            ECS / Fargate
-                      Private App Subnets A/B
+                     Private App Subnets A/B
                                  |
-                     +-----------+-----------+
-                     |                       |
-                     v                       v
-              Product Service          Order Service
-                     |                       |
-                     |                       +-------> Amazon SQS
-                     |                                  |
-                     |                                  v
-                     |                            Worker Service
-                     |                                  |
-                     +------------------+---------------+
-                                        |
-                                        v
+                    +------------+------------+
+                    |                         |
+                    v                         v
+              Product Service           Order Service
+                    |                         |
+                    |                         +-------> Amazon SQS
+                    |                                    |
+                    |                                    v
+                    |                               Worker Service
+                    |                                    |
+                    +------------------+-----------------+
+                                       |
+                                       | PostgreSQL :5432
+                                       v
                               Amazon RDS PostgreSQL
                            Private Database Subnets A/B
 ```
 
-The AWS environment will introduce private ECS workloads, security groups, IAM roles, ECR, RDS, SQS, CloudWatch, secrets management, scaling, and automated deployment.
+The Product Service portion of this architecture is currently the most developed in Terraform.
+
+The Order Service, service discovery, SQS, and Worker Service remain future implementation stages.
 
 
 ## AWS Network Design
 
-The initial AWS network architecture has been defined with Terraform.
+The AWS network architecture is defined with Terraform.
 
 ```text
-                          Internet
-                             |
-                             v
-                      Internet Gateway
-                             |
-                +------------+------------+
-                |                         |
-        Public Subnet A             Public Subnet B
-         10.0.1.0/24                 10.0.2.0/24
-         us-east-1a                  us-east-1b
-                |
-          NAT Gateway
-                |
-                v
-       Private App Route Table
-                |
-        +-------+-------+
-        |               |
-        v               v
-Private App A      Private App B
-10.0.11.0/24       10.0.12.0/24
- us-east-1a         us-east-1b
-        |               |
-        +-------+-------+
-                |
-                v
-          ECS / Fargate
-                |
-                v
-       Private DB Subnets
-        /             \
-       v               v
-Private DB A       Private DB B
-10.0.21.0/24       10.0.22.0/24
- us-east-1a         us-east-1b
-                |
-                v
-        Amazon RDS PostgreSQL
+                           Internet
+                              |
+                              v
+                       Internet Gateway
+                              |
+                  +-----------+-----------+
+                  |                       |
+          Public Subnet A           Public Subnet B
+           10.0.1.0/24               10.0.2.0/24
+           us-east-1a                us-east-1b
+                  |
+             NAT Gateway
+                  |
+                  v
+          Private App Route Table
+                  |
+          +-------+-------+
+          |               |
+          v               v
+  Private App A      Private App B
+  10.0.11.0/24      10.0.12.0/24
+   us-east-1a         us-east-1b
+          |               |
+          +-------+-------+
+                  |
+                  v
+             ECS / Fargate
+                  |
+                  v
+          Private DB Subnets
+           /             \
+          v               v
+  Private DB A       Private DB B
+  10.0.21.0/24      10.0.22.0/24
+   us-east-1a         us-east-1b
+          \               /
+           \             /
+            v           v
+          Amazon RDS PostgreSQL
 ```
 
 The VPC uses the CIDR range:
@@ -627,20 +818,30 @@ The private application subnets route outbound internet traffic through a NAT Ga
 
 The private database subnets are isolated from direct internet routing.
 
-Planned security controls include:
+The intended traffic path is:
 
-- Public access through the Application Load Balancer
-- ECS tasks running without public IP addresses
-- Security group references between infrastructure tiers
-- Database access restricted to authorized application services
-- Private database placement
-- IAM roles following least-privilege principles
-- Externalized secrets and application configuration
+```text
+Internet
+   |
+   | TCP 80
+   v
+Application Load Balancer
+   |
+   | TCP 8000
+   v
+ECS / Fargate
+   |
+   | TCP 5432
+   v
+Amazon RDS PostgreSQL
+```
+
+Security groups enforce access between these infrastructure tiers.
 
 
 ## Local-to-AWS Mapping
 
-The local environment is intentionally designed to introduce concepts that later map to AWS services.
+The local environment is intentionally designed to introduce concepts that map to AWS services.
 
 | Local Environment | AWS Target |
 |---|---|
@@ -675,6 +876,23 @@ The current Terraform configuration includes:
 - Public route table
 - Private application route table
 - Route table associations
+- Amazon ECR repositories
+- ALB security group
+- ECS security group
+- RDS security group
+- ECS task execution IAM role
+- Secrets Manager IAM permissions
+- CloudWatch log groups
+- ECS cluster
+- Product Service Fargate task definition
+- Product Service ECS service
+- Application Load Balancer
+- Product Service target group
+- HTTP listener
+- RDS DB subnet group
+- RDS PostgreSQL instance
+- RDS-managed master credentials
+- Product Service RDS runtime configuration
 - Terraform outputs
 - Shared resource tagging
 
@@ -691,32 +909,33 @@ Infrastructure changes are reviewed before deployment using:
 terraform plan
 ```
 
-The network infrastructure has intentionally not yet been provisioned so billable resources such as the NAT Gateway are not left running unnecessarily during development.
+The infrastructure has intentionally not yet been provisioned so billable AWS resources are not left running unnecessarily while the design is still being completed.
 
 
 ## Next Steps
 
-The local containerized application foundation is functional, and the initial AWS network infrastructure has been defined with Terraform.
+The local containerized application foundation is functional, and a substantial portion of the AWS infrastructure is now defined in Terraform.
 
-Planned work includes:
+The next stages of the project are:
 
-- Create Amazon ECR repositories
-- Implement security groups between the ALB, ECS services, and RDS
-- Define ECS cluster, task definitions, and services
-- Configure Application Load Balancer routing
-- Define Amazon RDS PostgreSQL infrastructure
-- Externalize sensitive configuration using AWS secrets management
-- Review the complete Terraform execution plan and infrastructure cost
-- Deploy the AWS infrastructure
-- Push CloudCart container images to Amazon ECR
-- Deploy Product Service and Order Service to Amazon ECS using AWS Fargate
-- Implement AWS service discovery between application services
-- Add Amazon CloudWatch logging and monitoring
-- Introduce Amazon SQS
-- Build the Worker Service for asynchronous processing
-- Configure ECS Auto Scaling
-- Build CI/CD workflows with GitHub Actions
-- Perform infrastructure and container security hardening
+1. Define the Order Service ECS/Fargate task definition.
+2. Define the Order Service ECS service.
+3. Determine Application Load Balancer routing for the Order Service.
+4. Implement AWS service discovery for service-to-service communication.
+5. Configure the Order Service database runtime configuration and secrets.
+6. Review the complete Terraform configuration and execution plan.
+7. Review expected AWS infrastructure cost before deployment.
+8. Provision the initial AWS infrastructure with Terraform.
+9. Build and push Product Service and Order Service images to Amazon ECR.
+10. Deploy and validate the application on ECS/Fargate.
+11. Verify ALB health checks and application routing.
+12. Verify ECS-to-RDS connectivity.
+13. Implement Amazon SQS.
+14. Build the Worker Service for asynchronous processing.
+15. Add additional CloudWatch monitoring and operational visibility.
+16. Configure ECS Auto Scaling.
+17. Build CI/CD workflows with GitHub Actions.
+18. Perform infrastructure and container security hardening.
 
 
 ## Repository Structure
@@ -729,13 +948,20 @@ cloudcart-microservices/
 ├── .gitignore
 |
 ├── terraform/
+|   ├── cloudwatch.tf
 |   ├── data.tf
+|   ├── ecr.tf
+|   ├── ecs.tf
+|   ├── iam.tf
 |   ├── internet-gateway.tf
+|   ├── load-balancer.tf
 |   ├── locals.tf
 |   ├── nat-gateway.tf
 |   ├── outputs.tf
 |   ├── providers.tf
+|   ├── rds.tf
 |   ├── route-tables.tf
+|   ├── security-groups.tf
 |   └── vpc.tf
 |
 └── services/
@@ -776,27 +1002,36 @@ cloudcart-microservices/
 - HTTPX
 - PostgreSQL
 
+
 ### Containers
 
 - Docker
 - Docker Compose
 
-### AWS — Planned / In Progress
+
+### AWS — Defined / In Progress
 
 - Amazon VPC
 - Amazon ECR
 - Amazon ECS
 - AWS Fargate
-- Application Load Balancer
-- Amazon RDS
-- Amazon SQS
+- Elastic Load Balancing / Application Load Balancer
+- Amazon RDS PostgreSQL
 - Amazon CloudWatch
 - AWS Secrets Manager
 - AWS IAM
+
+
+### AWS — Planned
+
+- Amazon SQS
+- AWS service discovery
+- ECS Auto Scaling
+
 
 ### Infrastructure & Automation
 
 - Terraform
 - Git
 - GitHub
-- GitHub Actions
+- GitHub Actions — Planned
