@@ -59,6 +59,7 @@ resource "aws_ecs_task_definition" "cloudcart_product_service" {
 
       portMappings = [
         {
+          name          = "product-service"
           containerPort = 8000
           protocol      = "tcp"
         }
@@ -75,6 +76,109 @@ resource "aws_ecs_task_definition" "cloudcart_product_service" {
       }
     }
   ])
+}
+
+# Fargate task definition for the Order Service
+resource "aws_ecs_task_definition" "cloudcart_order_service" {
+  family                   = "cloudcart-order-service"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+
+  cpu    = "256"
+  memory = "512"
+
+  execution_role_arn = aws_iam_role.cloudcart_ecs_task_execution_role.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "order-service"
+      image     = "${aws_ecr_repository.cloudcart_order_service.repository_url}:latest"
+      essential = true
+
+      # Non-sensitive database configuration provided directly to the container.
+      # The RDS endpoint is created by AWS when the database is provisioned.
+      environment = [
+        {
+          name  = "DB_HOST"
+          value = aws_db_instance.cloudcart_postgres.address
+        },
+        {
+          name  = "DB_PORT"
+          value = tostring(aws_db_instance.cloudcart_postgres.port)
+        },
+        {
+          name  = "DB_NAME"
+          value = "cloudcart"
+        },
+        {
+          # Stable Product Service address provided through ECS Service Connect
+          name  = "PRODUCT_SERVICE_URL"
+          value = "http://product-service:8000"
+        },
+      ]
+
+      # Sensitive database credentials are injected from the RDS-managed
+      # Secrets Manager secret instead of being stored in the task definition.
+      secrets = [
+        {
+          name      = "DB_USER"
+          valueFrom = "${aws_db_instance.cloudcart_postgres.master_user_secret[0].secret_arn}:username::"
+        },
+        {
+          name      = "DB_PASSWORD"
+          valueFrom = "${aws_db_instance.cloudcart_postgres.master_user_secret[0].secret_arn}:password::"
+        }
+      ]
+
+      portMappings = [
+        {
+          containerPort = 8000
+          protocol      = "tcp"
+        }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.cloudcart_order_service.name
+          "awslogs-region"        = "us-east-1"
+          "awslogs-stream-prefix" = "order-service"
+        }
+      }
+    }
+  ])
+}
+
+# ECS service that runs and maintains the Order Service
+resource "aws_ecs_service" "cloudcart_order_service" {
+  name            = "cloudcart-order-service"
+  cluster         = aws_ecs_cluster.cloudcart_cluster.id
+  task_definition = aws_ecs_task_definition.cloudcart_order_service.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  # Run Order Service tasks inside the private application subnets.
+  # Tasks use the ECS security group and do not receive public IP addresses.
+  network_configuration {
+    subnets = [
+      aws_subnet.cloudcart_private_app_subnet_a.id,
+      aws_subnet.cloudcart_private_app_subnet_b.id
+    ]
+
+    security_groups = [
+      aws_security_group.cloudcart_ecs_sg.id
+    ]
+
+    assign_public_ip = false
+  }
+
+  # Enable Service Connect so Order Service can communicate with
+  # other CloudCart services through stable service names.
+  service_connect_configuration {
+    enabled   = true
+    namespace = aws_service_discovery_http_namespace.cloudcart.arn
+  }
 }
 
 # ECS service that runs and maintains the Product Service
@@ -102,5 +206,26 @@ resource "aws_ecs_service" "cloudcart_product_service" {
     ]
 
     assign_public_ip = false
+  }
+
+  # Enable Service Connect so other CloudCart services can reach
+  # Product Service using a stable service name instead of task IP addresses.
+  service_connect_configuration {
+    enabled   = true
+    namespace = aws_service_discovery_http_namespace.cloudcart.arn
+
+    service {
+      # References the named port in the Product Service task definition
+      port_name = "product-service"
+
+      # Name used by other ECS services to discover Product Service
+      discovery_name = "product-service"
+
+      client_alias {
+        # Allows clients to reach Product Service on port 8000
+        port     = 8000
+        dns_name = "product-service"
+      }
+    }
   }
 }

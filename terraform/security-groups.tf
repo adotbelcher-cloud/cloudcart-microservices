@@ -51,6 +51,21 @@ resource "aws_vpc_security_group_ingress_rule" "cloudcart_ecs_from_alb" {
   from_port                    = 8000
   to_port                      = 8000
   ip_protocol                  = "tcp"
+
+}
+
+# Allow CloudCart ECS tasks to communicate with other tasks
+# using the same security group on the application port.
+resource "aws_vpc_security_group_ingress_rule" "cloudcart_ecs_from_ecs" {
+  security_group_id = aws_security_group.cloudcart_ecs_sg.id
+
+  # Reference the ECS security group itself so application tasks
+  # can communicate without allowing the entire VPC CIDR range.
+  referenced_security_group_id = aws_security_group.cloudcart_ecs_sg.id
+
+  from_port   = 8000
+  to_port     = 8000
+  ip_protocol = "tcp"
 }
 
 # Allow ECS tasks to initiate outbound connections
