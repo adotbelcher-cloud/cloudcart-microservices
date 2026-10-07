@@ -20,6 +20,7 @@ CloudCart is being built to develop practical experience with:
 - Container networking and service discovery
 - Service-to-service communication
 - Application health checks and dependency handling
+- Database schema migrations
 - Amazon ECS and AWS Fargate
 - Amazon Elastic Container Registry (ECR)
 - Application Load Balancers
@@ -38,45 +39,46 @@ CloudCart is being built to develop practical experience with:
 
 CloudCart uses a lightweight e-commerce application to simulate the type of workload a cloud engineer may be responsible for deploying and operating.
 
-The Product Service and Order Service provide the application workload for the project. The primary engineering focus is the infrastructure surrounding these services: containerization, networking, AWS deployment, security, observability, reliability, scaling, automation, and Infrastructure as Code.
+The Product Service and Order Service provide the application workload for the project. The primary engineering focus is the infrastructure surrounding these services: containerization, networking, AWS deployment, security, observability, reliability, scaling, automation, database lifecycle management, and Infrastructure as Code.
 
 Application functionality is intentionally limited so the project can remain focused on cloud engineering rather than full-stack application development.
 
 
-## Current Local Architecture
+# Current Local Architecture
 
 CloudCart currently consists of two FastAPI microservices and a PostgreSQL database running as a multi-container application using Docker Compose.
 
 ```text
                               Host
                                |
-                 +-------------+-------------+
-                 |                           |
-          localhost:8000              localhost:8001
-                 |                           |
-                 v                           v
-          Product Service              Order Service
-          FastAPI :8000                FastAPI :8000
-                 |                           |
-                 |<------ HTTP --------------+
-                 |   product-service:8000    |
-                 |                           |
-                 +------------+--------------+
-                              |
-                              | SQL
-                              v
-                         PostgreSQL
-                           :5432
-                              |
-                 +------------+------------+
-                 |                         |
-                 v                         v
-           products table             orders table
-                 |                         |
-                 +------------+------------+
-                              |
-                              v
-                    Persistent Docker Volume
+                  +------------+-------------+
+                  |                          |
+            localhost:8000             localhost:8001
+                  |                          |
+                  v                          v
+           Product Service              Order Service
+           FastAPI :8000                FastAPI :8000
+                  ^                          |
+                  |                          |
+                  +------ HTTP --------------+
+                  |   product-service:8000
+                  |
+                  +------------+-------------+
+                               |
+                               | SQL
+                               v
+                          PostgreSQL
+                            :5432
+                               |
+                  +------------+------------+
+                  |                         |
+                  v                         v
+             products table             orders table
+                  |                         |
+                  +------------+------------+
+                               |
+                               v
+                      Persistent Docker Volume
 ```
 
 Docker Compose provides the shared network and internal DNS used by the services.
@@ -203,8 +205,10 @@ products table
 
 This preserves the service boundary and allows the Product Service implementation to evolve independently.
 
+Database migration ownership follows the same boundary. Product Service manages migrations for the `products` table, while Order Service manages migrations for the `orders` table.
 
-## Local Service Discovery
+
+# Local Service Discovery
 
 Docker Compose provides internal DNS for the local container network.
 
@@ -232,11 +236,12 @@ Product Service container
 Docker can replace a container and assign it a different internal IP without requiring changes to the Order Service configuration.
 
 
-## Runtime Configuration
+# Runtime Configuration
 
 Application configuration is externalized using environment variables rather than being hardcoded into the container image.
 
-### Local Database Configuration
+
+## Local Database Configuration
 
 Local development can provide a complete SQLAlchemy database URL:
 
@@ -252,7 +257,8 @@ postgresql+psycopg://username:password@host:5432/database
 
 The local Docker environment uses the PostgreSQL service name when containers communicate internally.
 
-### AWS Database Configuration
+
+## AWS Database Configuration
 
 The same application code also supports database settings supplied individually:
 
@@ -271,16 +277,16 @@ The application constructs the SQLAlchemy database URL from these values.
 This design allows the same container image to run in multiple environments:
 
 ```text
-                    Application Image
+                     Application Image
                            |
               +------------+------------+
               |                         |
               v                         v
-        Local Docker                  AWS ECS
+         Local Docker                 AWS ECS
               |                         |
-        DATABASE_URL             DB_HOST / DB_PORT
-                                 DB_NAME / DB_USER
-                                 DB_PASSWORD
+         DATABASE_URL             DB_HOST / DB_PORT
+                                  DB_NAME / DB_USER
+                                  DB_PASSWORD
               |                         |
               +------------+------------+
                            |
@@ -292,7 +298,7 @@ This design allows the same container image to run in multiple environments:
 ```
 
 
-## Health Checks
+# Health Checks
 
 CloudCart uses health endpoints and container health checks to distinguish a running process from a healthy application.
 
@@ -338,7 +344,7 @@ PostgreSQL          healthy
 This distinction becomes important in AWS because ECS and the Application Load Balancer use health information to determine whether application tasks should receive traffic.
 
 
-## Dependency Failure Handling
+# Dependency Failure Handling
 
 Order Service depends on Product Service when creating orders.
 
@@ -356,7 +362,7 @@ Order Service
   v
 Product Service
   X
- unavailable
+  unavailable
   |
   v
 Order Service remains running
@@ -370,7 +376,7 @@ This demonstrates an important distributed-systems concept:
 > A service can remain healthy while one of its downstream dependencies is unavailable.
 
 
-## Docker Environment
+# Docker Environment
 
 CloudCart currently runs three containers locally:
 
@@ -391,7 +397,7 @@ localhost:5432 -> PostgreSQL      :5432
 Inside the Docker network, services communicate using container service names rather than host ports.
 
 
-## Persistent Storage
+# Persistent Storage
 
 PostgreSQL uses a Docker volume for persistent local data.
 
@@ -413,9 +419,138 @@ Persistent Docker Volume
         +---- orders
 ```
 
-This is useful locally, but it also creates an important deployment consideration: a new Amazon RDS database will not contain the tables stored in the local Docker volume.
+Persistent storage is useful locally, but it creates an important deployment consideration: existing tables in the local Docker volume will not exist automatically in a newly provisioned Amazon RDS database.
 
-Database schema initialization is therefore part of the AWS pre-deployment work.
+CloudCart addresses this using version-controlled Alembic database migrations.
+
+
+# Database Schema Migrations
+
+CloudCart uses **Alembic** to manage PostgreSQL schema changes as versioned migrations.
+
+Database migrations are owned independently by each microservice:
+
+```text
+Product Service
+      |
+      +---- products
+      |
+      +---- alembic_version_product
+
+
+Order Service
+      |
+      +---- orders
+      |
+      +---- alembic_version_order
+```
+
+Although Product Service and Order Service currently share the same PostgreSQL database, each service maintains independent schema ownership and migration history.
+
+Product Service migrations manage the `products` schema.
+
+Order Service migrations manage the `orders` schema.
+
+Alembic ownership filters prevent one service from generating migrations that modify or remove tables owned by another service.
+
+
+## Product Service Migration
+
+The initial Product Service migration creates:
+
+```text
+products
+```
+
+The Product Service uses its own migration tracking table:
+
+```text
+alembic_version_product
+```
+
+The initial migration defines:
+
+```text
+products
+├── id
+├── name
+├── description
+├── price
+└── inventory
+```
+
+
+## Order Service Migration
+
+The initial Order Service migration creates:
+
+```text
+orders
+```
+
+The Order Service uses its own migration tracking table:
+
+```text
+alembic_version_order
+```
+
+The initial migration defines:
+
+```text
+orders
+├── id
+├── product_id
+├── product_name
+├── quantity
+├── unit_price
+├── total
+└── status
+```
+
+
+## Migration Validation
+
+The migration architecture was tested against a temporary, completely fresh PostgreSQL 17 database before AWS deployment.
+
+The validation process confirmed that:
+
+- Product Service can initialize the `products` schema from an empty database
+- Product Service records its migration revision independently
+- Order Service can initialize the `orders` schema in the same database
+- Order Service records its migration revision independently
+- Product migrations ignore Order-owned schema
+- Order migrations ignore Product-owned schema
+- Both migration histories can coexist in the same PostgreSQL database
+- Alembic detects no unexpected Product schema changes after the migrations are applied
+
+The resulting test database contained:
+
+```text
+cloudcart_test
+│
+├── products
+├── orders
+├── alembic_version_product
+└── alembic_version_order
+```
+
+This provides a repeatable schema initialization process for a newly provisioned Amazon RDS PostgreSQL database rather than relying on tables preserved in the local Docker volume.
+
+Conceptually, a fresh AWS database can now follow:
+
+```text
+Fresh RDS PostgreSQL
+        |
+        +---- Product migrations
+        |         |
+        |         v
+        |      products
+        |
+        +---- Order migrations
+                  |
+                  v
+               orders
+```
 
 
 # AWS Architecture
@@ -424,7 +559,7 @@ CloudCart is currently being translated from the local Docker environment into A
 
 The AWS environment has been **defined but has intentionally not yet been fully provisioned**.
 
-This allows the architecture, dependencies, runtime configuration, and expected cost to be reviewed before creating billable cloud resources.
+This allows the architecture, dependencies, runtime configuration, database lifecycle, and expected cost to be reviewed before creating billable cloud resources.
 
 
 ## Target AWS Architecture
@@ -432,33 +567,32 @@ This allows the architecture, dependencies, runtime configuration, and expected 
 The current AWS design is:
 
 ```text
-                              Internet
-                                 |
-                                 | HTTP
-                                 v
-                    Application Load Balancer
-                         Public Subnets
-                                 |
-                                 |
-                                 v
-                         ECS / Fargate
-                    Private App Subnets
-                                 |
-                    +------------+------------+
-                    |                         |
-                    v                         v
-             Product Service            Order Service
-                    ^                         |
-                    |                         |
-                    +---- Service Connect ----+
-                    |
-                    |
-                    +------------+------------+
-                                 |
-                                 | PostgreSQL :5432
-                                 v
-                       Amazon RDS PostgreSQL
-                       Private DB Subnets
+                               Internet
+                                  |
+                                  | HTTP
+                                  v
+                     Application Load Balancer
+                          Public Subnets
+                                  |
+                                  v
+                           ECS / Fargate
+                       Private App Subnets
+                                  |
+                     +------------+------------+
+                     |                         |
+                     v                         v
+              Product Service             Order Service
+                     ^                         |
+                     |                         |
+                     +---- Service Connect ----+
+                                  |
+                                  |
+                     +------------+------------+
+                                  |
+                                  | PostgreSQL :5432
+                                  v
+                         Amazon RDS PostgreSQL
+                         Private DB Subnets
 ```
 
 Supporting AWS services include:
@@ -490,7 +624,7 @@ ECS Service Connect
 ```
 
 
-## AWS Networking
+# AWS Networking
 
 CloudCart uses a dedicated VPC:
 
@@ -500,7 +634,8 @@ CloudCart uses a dedicated VPC:
 
 The VPC is divided into three infrastructure tiers across two Availability Zones.
 
-### Public Subnets
+
+## Public Subnets
 
 ```text
 Public Subnet A
@@ -516,7 +651,8 @@ The public subnets are intended for internet-facing infrastructure such as the A
 
 A subnet is considered public because its route table provides a route to an Internet Gateway. Resources do not automatically need public IP addresses simply because they are placed in a public subnet.
 
-### Private Application Subnets
+
+## Private Application Subnets
 
 ```text
 Private App Subnet A
@@ -532,7 +668,8 @@ ECS/Fargate application tasks run in these subnets.
 
 The tasks do not receive public IP addresses.
 
-### Private Database Subnets
+
+## Private Database Subnets
 
 ```text
 Private DB Subnet A
@@ -549,7 +686,7 @@ Amazon RDS is restricted to the private database tier.
 The database subnets do not have a general default route to the Internet Gateway or NAT Gateway.
 
 
-## Internet Gateway
+# Internet Gateway
 
 An Internet Gateway provides internet connectivity for resources using the public route table.
 
@@ -562,7 +699,7 @@ The public route table contains:
 The Application Load Balancer uses the public subnets so it can serve as CloudCart's public application entry point.
 
 
-## NAT Gateway
+# NAT Gateway
 
 CloudCart currently defines one NAT Gateway in Public Subnet A.
 
@@ -589,11 +726,12 @@ The NAT Gateway does not make ECS tasks directly reachable from the internet.
 Using one NAT Gateway is a development and cost-conscious design decision. A more highly available production architecture could use a NAT Gateway per Availability Zone.
 
 
-## Security Groups
+# Security Groups
 
 CloudCart separates network permissions between the load balancer, application, and database tiers.
 
-### ALB Security Group
+
+## ALB Security Group
 
 The Application Load Balancer accepts HTTP traffic from the internet:
 
@@ -605,7 +743,8 @@ Internet
 ALB Security Group
 ```
 
-### ECS Security Group
+
+## ECS Security Group
 
 Application traffic from the ALB is allowed to reach ECS tasks on port `8000`:
 
@@ -631,7 +770,8 @@ Product Service
 ECS Security Group
 ```
 
-### RDS Security Group
+
+## RDS Security Group
 
 PostgreSQL access is restricted to application workloads using the ECS security group:
 
@@ -664,7 +804,7 @@ RDS SG
 Security group references are used instead of broadly allowing the entire VPC CIDR where possible.
 
 
-## Amazon ECR
+# Amazon ECR
 
 CloudCart defines separate Amazon Elastic Container Registry repositories for:
 
@@ -698,7 +838,7 @@ The current task definitions reference the `latest` image tag during the initial
 Versioned or immutable image-tagging strategies can be introduced later as part of CI/CD improvements.
 
 
-## Amazon ECS
+# Amazon ECS
 
 CloudCart uses Amazon ECS with AWS Fargate.
 
@@ -718,7 +858,8 @@ CloudCart ECS Cluster
               Order Task Definition
 ```
 
-### Task Definitions
+
+## Task Definitions
 
 Task definitions describe how containers should run.
 
@@ -742,7 +883,8 @@ CPU:    256 CPU units / 0.25 vCPU
 Memory: 512 MiB
 ```
 
-### ECS Services
+
+## ECS Services
 
 ECS services maintain the desired number of running tasks.
 
@@ -772,7 +914,7 @@ ECS Service
 AWS Fargate provides the underlying compute without requiring CloudCart to manage EC2 instances.
 
 
-## ECS Service Connect
+# ECS Service Connect
 
 CloudCart uses ECS Service Connect for internal service discovery.
 
@@ -824,7 +966,7 @@ Service discovery and network authorization remain separate concerns.
 Service Connect determines **where the service is**, while security groups determine **whether the network traffic is permitted**.
 
 
-## Application Load Balancer
+# Application Load Balancer
 
 CloudCart defines an internet-facing Application Load Balancer across the two public subnets.
 
@@ -853,7 +995,8 @@ Target:   IP
 
 Fargate tasks use `awsvpc` networking, so the ALB registers task IP addresses with the target group.
 
-### Health Checks
+
+## Health Checks
 
 The Product Service target group checks:
 
@@ -875,8 +1018,10 @@ ALB
  +---- /orders* ------> Order Target Group
 ```
 
+Completing this routing is the next major pre-deployment infrastructure task.
 
-## Amazon RDS PostgreSQL
+
+# Amazon RDS PostgreSQL
 
 CloudCart defines an Amazon RDS PostgreSQL database.
 
@@ -908,8 +1053,10 @@ The subnet group determines where RDS may be placed.
 
 `multi_az = false` is currently used to reduce development cost. The presence of multiple database subnets does not itself mean the database is running as a Multi-AZ deployment.
 
+A newly provisioned RDS database will use the Alembic migration process to initialize the Product and Order schemas.
 
-## AWS Secrets Manager
+
+# AWS Secrets Manager
 
 CloudCart does not store the RDS master password directly in Terraform configuration.
 
@@ -925,7 +1072,7 @@ DB_PASSWORD
 The ECS task definition references the RDS-managed secret rather than embedding credentials directly in the task definition.
 
 
-## IAM
+# IAM
 
 CloudCart currently defines an ECS task execution role.
 
@@ -936,11 +1083,11 @@ Conceptually:
 ```text
                  ECS Execution Role
                         |
-          +-------------+-------------+
-          |             |             |
-          v             v             v
-         ECR      Secrets Manager  CloudWatch
-    pull images    retrieve secret  send logs
+           +------------+-------------+
+           |            |             |
+           v            v             v
+          ECR      Secrets Manager  CloudWatch
+     pull images    retrieve secret  send logs
 ```
 
 The execution role uses the standard Amazon ECS task execution policy along with additional permission to retrieve the CloudCart RDS-managed secret.
@@ -961,7 +1108,7 @@ AWS permissions used by application code inside the container
 A task role will become particularly relevant when application components such as the future Worker Service interact directly with AWS services such as Amazon SQS.
 
 
-## Amazon CloudWatch
+# Amazon CloudWatch
 
 CloudCart defines separate CloudWatch log groups for:
 
@@ -1006,6 +1153,7 @@ The local CloudCart environment intentionally introduces concepts that map direc
 | Local port publishing | Application Load Balancer |
 | PostgreSQL container | Amazon RDS PostgreSQL |
 | Docker volume | RDS-managed persistent storage |
+| Local schema initialization | Alembic migrations against RDS |
 | `.env` / environment variables | ECS runtime configuration |
 | Local credentials | AWS Secrets Manager |
 | Container health checks | ECS / ALB health checks |
@@ -1082,7 +1230,7 @@ The goal is to identify deployment and runtime problems before provisioning infr
 - Container images exist
 - ECS can successfully start the containers
 - Application configuration is correct
-- Database tables exist
+- Database migrations can initialize the required schema
 - Network paths function as intended
 - IAM permissions are sufficient at runtime
 - ALB routing is complete
@@ -1108,11 +1256,21 @@ The following checks have been completed:
 - ECS Service Connect configuration has been introduced
 - Product Service has a stable Service Connect alias
 - ECS-to-ECS traffic is explicitly permitted on the application port
+- Product Service Alembic environment has been configured
+- Order Service Alembic environment has been configured
+- Initial Product schema migration has been generated
+- Initial Order schema migration has been generated
+- Product migration has been tested against a fresh PostgreSQL 17 database
+- Order migration has been tested against the same PostgreSQL database
+- Independent Product and Order migration version tables have been validated
+- Product migrations ignore Order-owned schema
+- Order migrations ignore Product-owned schema
+- Product Alembic schema comparison reports no unexpected upgrade operations after migration
 
 
-## Database Schema Initialization
+## Database Schema Initialization — Completed
 
-The local PostgreSQL environment uses a persistent Docker volume.
+The original local PostgreSQL environment uses a persistent Docker volume.
 
 As a result, rebuilding application containers does not recreate the database:
 
@@ -1124,12 +1282,12 @@ New Order Container ------+----> Existing PostgreSQL
                                       v
                                 Persistent Volume
                                       |
-                             +--------+--------+
-                             |                 |
-                          products           orders
+                                 +----+----+
+                                 |         |
+                              products   orders
 ```
 
-A newly provisioned Amazon RDS instance will not contain these existing local tables.
+This initially created a deployment risk because a newly provisioned Amazon RDS instance will not contain those existing local tables.
 
 Without schema initialization, an application could successfully reach RDS but still fail with errors such as:
 
@@ -1143,16 +1301,19 @@ or:
 relation "orders" does not exist
 ```
 
-Database migrations have therefore been identified as a deployment requirement.
+This issue has now been addressed using Alembic.
 
-The planned approach is to introduce Alembic so database schema changes can be explicitly created, versioned, and applied.
+The Product and Order services each maintain their own migration environment and migration history.
+
+The migration process was validated against a fresh PostgreSQL 17 database, confirming that the application schemas can be created independently without relying on the persistent local Docker volume.
+
+Database schema initialization is therefore no longer an unresolved pre-deployment blocker.
 
 
 ## Remaining Pre-Deployment Checks
 
 Before the initial AWS deployment, the project still needs to address:
 
-- Database schema migrations
 - Order Service ALB target group
 - ALB path-based routing for Product and Order services
 - ECS-to-ALB resource creation dependencies
@@ -1163,6 +1324,7 @@ Before the initial AWS deployment, the project still needs to address:
 - RDS connectivity validation
 - Secrets Manager injection validation
 - IAM runtime permission validation
+- Database migration execution strategy during AWS deployment
 - Complete Terraform execution plan review
 - AWS cost review
 - Initial deployment sequencing
@@ -1226,10 +1388,10 @@ RDS connectivity failure
 Application cannot reach PostgreSQL
 
 
-Missing database schema
+Missing database migration
        |
        v
-SQL queries fail
+Required schema does not exist
 
 
 Application error
@@ -1244,7 +1406,7 @@ Health endpoint failure
 ALB target becomes unhealthy
 ```
 
-This layered approach helps distinguish application, container, network, IAM, database, and AWS infrastructure problems.
+This layered approach helps distinguish application, container, network, IAM, database, migration, and AWS infrastructure problems.
 
 
 # Repository Structure
@@ -1280,29 +1442,45 @@ cloudcart-microservices/
     |   ├── Dockerfile
     |   ├── .dockerignore
     |   ├── requirements.txt
+    |   ├── alembic.ini
     |   |
-    |   └── app/
-    |       ├── __init__.py
-    |       ├── main.py
-    |       ├── database.py
-    |       └── models.py
+    |   ├── app/
+    |   |   ├── __init__.py
+    |   |   ├── main.py
+    |   |   ├── database.py
+    |   |   └── models.py
+    |   |
+    |   └── migrations/
+    |       ├── README
+    |       ├── env.py
+    |       ├── script.py.mako
+    |       └── versions/
+    |           └── 8b989af94884_create_products_table.py
     |
     └── order-service/
         ├── Dockerfile
         ├── .dockerignore
         ├── requirements.txt
+        ├── alembic.ini
         |
-        └── app/
-            ├── __init__.py
-            ├── main.py
-            ├── database.py
-            └── models.py
+        ├── app/
+        |   ├── __init__.py
+        |   ├── main.py
+        |   ├── database.py
+        |   └── models.py
+        |
+        └── migrations/
+            ├── README
+            ├── env.py
+            ├── script.py.mako
+            └── versions/
+                └── b42864294bf6_create_orders_table.py
 ```
 
 
 # Technologies
 
-### Application Workload
+## Application Workload
 
 - Python
 - FastAPI
@@ -1312,12 +1490,22 @@ cloudcart-microservices/
 - HTTPX
 - PostgreSQL
 
-### Containers
+
+## Database Lifecycle
+
+- Alembic
+- SQLAlchemy metadata
+- Service-owned migration histories
+- PostgreSQL schema versioning
+
+
+## Containers
 
 - Docker
 - Docker Compose
 
-### AWS — Defined / In Progress
+
+## AWS — Defined / In Progress
 
 - Amazon VPC
 - Amazon ECR
@@ -1333,23 +1521,21 @@ cloudcart-microservices/
 - NAT Gateway
 - Internet Gateway
 
-### AWS — Planned
+
+## AWS — Planned
 
 - Amazon SQS
 - ECS Auto Scaling
 - Additional CloudWatch monitoring
 - HTTPS / TLS configuration
 
-### Infrastructure & Automation
+
+## Infrastructure & Automation
 
 - Terraform
 - Git
 - GitHub
 - GitHub Actions — planned
-
-### Database Lifecycle
-
-- Alembic — planned
 
 
 # Next Steps
@@ -1358,11 +1544,11 @@ CloudCart is currently undergoing a pre-deployment architecture review before AW
 
 The next phase includes:
 
-- Implement Alembic database migrations for fresh RDS deployments
-- Create and validate the initial database schema migration
 - Complete Application Load Balancer routing for Product Service and Order Service
 - Create the Order Service target group
+- Configure path-based routing for `/products*` and `/orders*`
 - Review ECS and ALB Terraform resource dependencies
+- Define how Alembic migrations will be executed during the initial AWS deployment
 - Review ECR image bootstrap and initial deployment sequencing
 - Build production-targeted Product and Order container images
 - Push the initial images to Amazon ECR
@@ -1372,6 +1558,7 @@ The next phase includes:
 - Review the complete Terraform execution plan
 - Review expected AWS infrastructure cost
 - Provision the initial AWS infrastructure
+- Run database migrations against the new RDS database
 - Deploy Product Service and Order Service to ECS/Fargate
 - Validate ALB health checks
 - Validate Product and Order API routing
@@ -1389,7 +1576,7 @@ The next phase includes:
 
 # Current Milestone
 
-CloudCart has progressed from a single local API into a multi-service containerized application with an AWS infrastructure architecture defined through Terraform.
+CloudCart has progressed from a single local API into a multi-service containerized application with an AWS infrastructure architecture defined through Terraform and a version-controlled database migration process.
 
 The current environment demonstrates:
 
@@ -1409,6 +1596,14 @@ Local Application
        +---- Health checks
        |
        +---- Service-to-service communication
+       |
+       +---- Alembic migrations
+       |         |
+       |         +---- Product schema ownership
+       |         |
+       |         +---- Order schema ownership
+       |         |
+       |         +---- Independent migration histories
        |
        v
 AWS Infrastructure Definition
@@ -1440,4 +1635,6 @@ AWS Infrastructure Definition
        +---- CloudWatch
 ```
 
-The next milestone is to complete the pre-deployment requirements and perform the first controlled AWS deployment.
+The database migration requirement has been completed and validated against a fresh PostgreSQL environment.
+
+The next milestone is to complete ALB routing and the remaining pre-deployment checks, define the controlled deployment sequence, and perform the first AWS deployment.
