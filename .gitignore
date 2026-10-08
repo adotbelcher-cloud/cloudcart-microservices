@@ -6,21 +6,15 @@ __pycache__/
 *.pyc
 
 # Environment files
-# These may contain credentials or other sensitive configuration
 .env
+.env.*
 
-# Terraform local state and working files
+# Terraform local files
 .terraform/
 *.tfstate
 *.tfstate.*
-.terraform.lock.hcl
+*.tfplan
+plan.txt
 
 # VS Code local settings
 .vscode/
-
-# Terraform
-.terraform/
-*.tfstate
-*.tfstate.*
-.terraform.lock.hcl
-crash.log

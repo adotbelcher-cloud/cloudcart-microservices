@@ -155,8 +155,16 @@ resource "aws_ecs_service" "cloudcart_order_service" {
   name            = "cloudcart-order-service"
   cluster         = aws_ecs_cluster.cloudcart_cluster.id
   task_definition = aws_ecs_task_definition.cloudcart_order_service.arn
-  desired_count   = 1
+  desired_count   = 0
   launch_type     = "FARGATE"
+
+  # Register Order Service tasks with the ALB target group.
+  # The ALB forwards matching /orders requests to container port 8000.
+  load_balancer {
+    target_group_arn = aws_lb_target_group.cloudcart_order_service.arn
+    container_name   = "order-service"
+    container_port   = 8000
+  }
 
   # Run Order Service tasks inside the private application subnets.
   # Tasks use the ECS security group and do not receive public IP addresses.
@@ -179,14 +187,20 @@ resource "aws_ecs_service" "cloudcart_order_service" {
     enabled   = true
     namespace = aws_service_discovery_http_namespace.cloudcart.arn
   }
+
+  # Wait until the ALB routing rule exists before creating the ECS service.
+  depends_on = [
+    aws_lb_listener_rule.cloudcart_order_routing
+  ]
 }
+
 
 # ECS service that runs and maintains the Product Service
 resource "aws_ecs_service" "cloudcart_product_service" {
   name            = "cloudcart-product-service"
   cluster         = aws_ecs_cluster.cloudcart_cluster.id
   task_definition = aws_ecs_task_definition.cloudcart_product_service.arn
-  desired_count   = 1
+  desired_count   = 0
   launch_type     = "FARGATE"
 
   load_balancer {
@@ -228,4 +242,9 @@ resource "aws_ecs_service" "cloudcart_product_service" {
       }
     }
   }
+
+  # Wait until the ALB routing rule exists before creating the ECS service.
+  depends_on = [
+    aws_lb_listener_rule.cloudcart_product_routing
+  ]
 }

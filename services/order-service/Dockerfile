@@ -13,6 +13,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the application source code into the container
 COPY app ./app
 
+# Include Alembic configuration and version-controlled database migrations
+COPY alembic.ini ./alembic.ini
+COPY migrations ./migrations
+
 # Document the port used by the Order Service inside the container
 EXPOSE 8000
 
