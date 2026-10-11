@@ -1,5 +1,10 @@
 name: CloudCart CI
 
+# Allow GitHub Actions to request an AWS OIDC token
+permissions:
+  id-token: write
+  contents: read
+
 on:
   push:
     branches:
@@ -29,3 +34,14 @@ jobs:
 
       - name: Build Order Service Image
         run: docker build -t cloudcart-order-service:ci ./services/order-service
+
+      # Exchange the GitHub OIDC token for temporary AWS credentials
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::063562647105:role/cloudcart-github-actions-ecr-role
+          aws-region: us-east-1
+
+      # Confirm the workflow successfully authenticated to AWS
+      - name: Verify AWS Identity
+        run: aws sts get-caller-identity
