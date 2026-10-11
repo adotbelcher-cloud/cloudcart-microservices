@@ -36,42 +36,6 @@ jobs:
       - name: Build Order Service Image
         run: docker build -t cloudcart-order-service:ci ./services/order-service
 
-      # Inspect selected GitHub OIDC claims without printing the token
-      - name: Inspect OIDC Claims
-        if: github.event_name == 'push'
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import os
-          import json
-          import base64
-          import urllib.parse
-          import urllib.request
-
-          base_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
-          separator = "&" if "?" in base_url else "?"
-          url = base_url + separator + urllib.parse.urlencode({
-              "audience": "sts.amazonaws.com"
-          })
-
-          request = urllib.request.Request(
-              url,
-              headers={
-                  "Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
-              }
-          )
-
-          with urllib.request.urlopen(request) as response:
-              token = json.load(response)["value"]
-
-          payload = token.split(".")[1]
-          payload += "=" * (-len(payload) % 4)
-          claims = json.loads(base64.urlsafe_b64decode(payload))
-
-          for key in ("iss", "aud", "sub", "repository", "ref", "event_name"):
-              print(f"{key}: {claims.get(key)}")
-          PY
-
       # Authenticate to AWS using temporary OIDC credentials
       - name: Configure AWS Credentials
         if: github.event_name == 'push'
@@ -84,3 +48,36 @@ jobs:
       - name: Verify AWS Identity
         if: github.event_name == 'push'
         run: aws sts get-caller-identity
+
+      # Authenticate Docker to Amazon ECR
+      - name: Login to Amazon ECR
+        if: github.event_name == 'push'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Build, tag, and push the Product Service image
+      - name: Push Product Service to ECR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          ECR_REGISTRY: 063562647105.dkr.ecr.us-east-1.amazonaws.com
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/cloudcart-product-service:$IMAGE_TAG \
+            ./services/product-service
+
+          docker push \
+            $ECR_REGISTRY/cloudcart-product-service:$IMAGE_TAG
+
+      # Build, tag, and push the Order Service image
+      - name: Push Order Service to ECR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          ECR_REGISTRY: 063562647105.dkr.ecr.us-east-1.amazonaws.com
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/cloudcart-order-service:$IMAGE_TAG \
+            ./services/order-service
+
+          docker push \
+            $ECR_REGISTRY/cloudcart-order-service:$IMAGE_TAG
