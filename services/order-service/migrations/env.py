@@ -19,7 +19,10 @@ config = context.config
 # Use the same database connection URL as the Order Service.
 # This overrides the placeholder sqlalchemy.url value in alembic.ini
 # and keeps database credentials out of the Alembic configuration file.
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
+config.set_main_option(
+    "sqlalchemy.url",
+    DATABASE_URL.replace("%", "%%"),
+)
 
 
 # Configure Python logging using the settings in alembic.ini

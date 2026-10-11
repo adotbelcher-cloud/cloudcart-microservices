@@ -78,7 +78,11 @@ def create_order(
         )
 
     # Handle cases where Product Service cannot be reached
-    except httpx.RequestError:
+    except httpx.RequestError as exc:
+        print(
+            f"Product Service connection failed: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
         raise HTTPException(
             status_code=503,
             detail="Product Service unavailable",
