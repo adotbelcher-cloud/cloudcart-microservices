@@ -1,9 +1,5 @@
-name: CloudCart CI
 
-# Allow GitHub Actions to request an AWS OIDC token
-permissions:
-  id-token: write
-  contents: read
+name: CloudCart CI
 
 on:
   push:
@@ -12,6 +8,11 @@ on:
   pull_request:
     branches:
       - main
+
+# Allow GitHub Actions to request an OIDC token
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   basic-check:
@@ -35,13 +36,51 @@ jobs:
       - name: Build Order Service Image
         run: docker build -t cloudcart-order-service:ci ./services/order-service
 
-      # Exchange the GitHub OIDC token for temporary AWS credentials
+      # Inspect selected GitHub OIDC claims without printing the token
+      - name: Inspect OIDC Claims
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import json
+          import base64
+          import urllib.parse
+          import urllib.request
+
+          base_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          separator = "&" if "?" in base_url else "?"
+          url = base_url + separator + urllib.parse.urlencode({
+              "audience": "sts.amazonaws.com"
+          })
+
+          request = urllib.request.Request(
+              url,
+              headers={
+                  "Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+              }
+          )
+
+          with urllib.request.urlopen(request) as response:
+              token = json.load(response)["value"]
+
+          payload = token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+
+          for key in ("iss", "aud", "sub", "repository", "ref", "event_name"):
+              print(f"{key}: {claims.get(key)}")
+          PY
+
+      # Authenticate to AWS using temporary OIDC credentials
       - name: Configure AWS Credentials
+        if: github.event_name == 'push'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::063562647105:role/cloudcart-github-actions-ecr-role
           aws-region: us-east-1
 
-      # Confirm the workflow successfully authenticated to AWS
+      # Confirm GitHub Actions assumed the correct IAM role
       - name: Verify AWS Identity
+        if: github.event_name == 'push'
         run: aws sts get-caller-identity
