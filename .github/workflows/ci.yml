@@ -23,3 +23,9 @@ jobs:
           pwd
           ls -la
           echo "CloudCart repository checkout successful"
+
+      - name: Build Product Service Image
+        run: docker build -t cloudcart-product-service:ci ./services/product-service
+
+      - name: Build Order Service Image
+        run: docker build -t cloudcart-order-service:ci ./services/order-service
