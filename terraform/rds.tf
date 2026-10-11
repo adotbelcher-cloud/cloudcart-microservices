@@ -20,9 +20,9 @@ resource "aws_db_instance" "cloudcart_postgres" {
   identifier = "cloudcart-postgres"
 
   engine         = "postgres"
-  engine_version = "17"
+  engine_version = "17.11"
 
-  instance_class        = "db.t4g.small"
+  instance_class        = "db.t3.micro"
   allocated_storage     = 20
   max_allocated_storage = 50
   storage_type          = "gp2"

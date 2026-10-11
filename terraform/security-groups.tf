@@ -90,7 +90,7 @@ resource "aws_security_group" "cloudcart_rds_sg" {
   )
 }
 
-# Allow application traffic from the ALB to ECS tasks
+# Allow ECS application tasks to connect to PostgreSQL on port 5432
 resource "aws_vpc_security_group_ingress_rule" "cloudcart_rds_from_ecs" {
   security_group_id = aws_security_group.cloudcart_rds_sg.id
 
