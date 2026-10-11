@@ -1,0 +1,25 @@
+name: CloudCart CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  basic-check:
+    name: Verify Repository
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Verify Repository Contents
+        run: |
+          echo "Starting CloudCart CI pipeline"
+          pwd
+          ls -la
+          echo "CloudCart repository checkout successful"
