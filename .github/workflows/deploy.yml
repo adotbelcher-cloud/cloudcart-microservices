@@ -29,7 +29,7 @@ jobs:
         env:
           AWS_ACCOUNT_ID: "063562647105"
           AWS_REGION: us-east-1
-          IMAGE_TAG: $&#123;&#123; github.sha &#125;&#125;
+          IMAGE_TAG: ${{ github.sha }}
         run: |
           set -euo pipefail
 
