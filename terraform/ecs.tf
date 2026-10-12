@@ -155,8 +155,12 @@ resource "aws_ecs_service" "cloudcart_order_service" {
   name            = "cloudcart-order-service"
   cluster         = aws_ecs_cluster.cloudcart_cluster.id
   task_definition = aws_ecs_task_definition.cloudcart_order_service.arn
-  desired_count   = 0
+  desired_count   = 1
   launch_type     = "FARGATE"
+
+  lifecycle {
+    ignore_changes = [task_definition]
+  }
 
   # Register Order Service tasks with the ALB target group.
   # The ALB forwards matching /orders requests to container port 8000.
@@ -200,8 +204,12 @@ resource "aws_ecs_service" "cloudcart_product_service" {
   name            = "cloudcart-product-service"
   cluster         = aws_ecs_cluster.cloudcart_cluster.id
   task_definition = aws_ecs_task_definition.cloudcart_product_service.arn
-  desired_count   = 0
+  desired_count   = 1
   launch_type     = "FARGATE"
+
+  lifecycle {
+    ignore_changes = [task_definition]
+  }
 
   load_balancer {
     target_group_arn = aws_lb_target_group.cloudcart_product_service.arn

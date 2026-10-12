@@ -1,0 +1,91 @@
+
+name: Deploy CloudCart to ECS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::063562647105:role/cloudcart-github-actions-ecr-role
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Deploy Product and Order services
+        env:
+          AWS_ACCOUNT_ID: "063562647105"
+          AWS_REGION: us-east-1
+          IMAGE_TAG: $&#123;&#123; github.sha &#125;&#125;
+        run: |
+          set -euo pipefail
+
+          for SERVICE in product order; do
+            FAMILY="cloudcart-${SERVICE}-service"
+            CONTAINER="${SERVICE}-service"
+            IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${FAMILY}:${IMAGE_TAG}"
+
+            aws ecr describe-images \
+              --repository-name "$FAMILY" \
+              --image-ids imageTag="$IMAGE_TAG" \
+              --region "$AWS_REGION" > /dev/null
+
+            aws ecs describe-task-definition \
+              --task-definition "$FAMILY" \
+              --region "$AWS_REGION" \
+              --query taskDefinition > task-definition.json
+
+            jq --arg image "$IMAGE" --arg container "$CONTAINER" '
+              del(
+                .taskDefinitionArn,
+                .revision,
+                .status,
+                .requiresAttributes,
+                .compatibilities,
+                .registeredAt,
+                .registeredBy,
+                .deregisteredAt,
+                .enableFaultInjection
+              )
+              | .containerDefinitions |= map(
+                  if .name == $container then
+                    .image = $image
+                  else
+                    .
+                  end
+                )
+            ' task-definition.json > new-task-definition.json
+
+            TASK_ARN=$(aws ecs register-task-definition \
+              --cli-input-json file://new-task-definition.json \
+              --tags key=Project,value=cloudcart-microservices \
+              --region "$AWS_REGION" \
+              --query 'taskDefinition.taskDefinitionArn' \
+              --output text)
+
+            aws ecs update-service \
+              --cluster cloudcart-cluster \
+              --service "$FAMILY" \
+              --task-definition "$TASK_ARN" \
+              --region "$AWS_REGION" > /dev/null
+
+            aws ecs wait services-stable \
+              --cluster cloudcart-cluster \
+              --services "$FAMILY" \
+              --region "$AWS_REGION"
+
+            echo "Deployed $FAMILY using $IMAGE"
+          done
