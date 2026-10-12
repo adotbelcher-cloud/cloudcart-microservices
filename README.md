@@ -1,10 +1,10 @@
 # CloudCart Microservices
 
-**Containerized E-Commerce Infrastructure on AWS | Terraform · ECS Fargate · Docker · PostgreSQL**
+**Containerized E-Commerce Infrastructure on AWS | Terraform · ECS Fargate · Docker · PostgreSQL · GitHub Actions**
 
 CloudCart is a hands-on cloud engineering project focused on designing, deploying, securing, and operating containerized workloads on AWS. A lightweight e-commerce application provides a realistic environment for practicing infrastructure provisioning, networking, service discovery, database lifecycle management, troubleshooting, and automation.
 
-**Project status:** Initial AWS deployment operational; end-to-end Product and Order workflows validated. Further security, reliability, and deployment automation work is planned.
+**Project status:** AWS infrastructure and both microservices are operational. End-to-end Product and Order workflows are validated, and GitHub Actions CI plus manually triggered ECS deployment are implemented and tested. Monitoring, rollback automation, and security hardening remain future work.
 
 ## Architecture
 
@@ -37,6 +37,8 @@ CloudCart is a hands-on cloud engineering project focused on designing, deployin
                     Private DB Subnets
 ```
 
+The deployment pipeline runs separately: GitHub Actions builds Docker images, publishes commit-SHA-tagged images to Amazon ECR, and deploys selected revisions to ECS using short-lived AWS credentials obtained through OIDC.
+
 Both application services run in **private application subnets without public IP addresses**. An internet-facing Application Load Balancer (ALB) routes requests to the appropriate ECS service. The database runs in separate private database subnets. A NAT Gateway supplies outbound connectivity for private application tasks.
 
 ### AWS services
@@ -51,9 +53,10 @@ Both application services run in **private application subnets without public IP
 | ECS Service Connect | Provides internal service discovery |
 | Amazon RDS PostgreSQL | Stores product and order data |
 | AWS Secrets Manager | Manages the RDS master credential |
-| AWS IAM | Grants ECS execution permissions |
+| AWS IAM / STS | Grants ECS execution permissions and temporary GitHub Actions deployment credentials |
 | Amazon CloudWatch | Collects container and migration logs |
 | Terraform | Provisions and manages AWS infrastructure |
+| GitHub Actions | Builds and publishes container images; manually deploys ECS service revisions |
 
 ## Network design
 
@@ -190,7 +193,7 @@ The initial deployment was provisioned through Terraform and tested on AWS.
 - Logging: separate CloudWatch log groups
 - Internal discovery: ECS Service Connect
 
-Terraform currently defines `desired_count = 0` for the ECS services, while task counts were scaled up through the AWS CLI for live testing. **Reconcile this difference before future Terraform applies** to avoid unintended scaling changes.
+Terraform defines `desired_count = 1` for both services. The ECS service resources use `lifecycle { ignore_changes = [task_definition] }` so later Terraform applies do not automatically revert the task definition revisions deployed by GitHub Actions. Terraform still manages the task definition resources themselves; changes to those resources require coordination with application deployments.
 
 ### Load balancing and health checks
 
@@ -208,6 +211,9 @@ Both target groups use HTTP on port `8000` and check `GET /health`. Healthy targ
 | Test | Result |
 |---|---|
 | Build and push both Docker images to ECR | Successful |
+| GitHub Actions CI builds and publishes commit-SHA-tagged images | Successful |
+| GitHub Actions OIDC authentication and manual ECS deployment | Successful |
+| Post-deployment GET `/products` and GET `/orders` through ALB | HTTP 200 for both |
 | Start Product and Order tasks on Fargate | Successful |
 | Run Product and Order migrations against RDS | Successful |
 | Confirm ALB target health | Healthy |
@@ -243,6 +249,67 @@ Client -> ALB -> Order Service -> ECS Service Connect -> Product Service
 Client <- HTTP 201 <- Order Service -> RDS order data
 ```
 
+## CI/CD with GitHub Actions
+
+CloudCart separates **continuous integration (CI)** from **continuous delivery (CD)**. GitHub Actions workflows live in `.github/workflows/` and run on GitHub-hosted Ubuntu runners. The workflow is responsible for application packaging and deployment; Terraform manages the supporting AWS infrastructure and permissions.
+
+### Continuous integration — `ci.yml`
+
+- Runs for pushes to `main` and pull requests targeting `main`.
+- Checks out the repository and builds separate Docker images for Product Service and Order Service.
+- On pushes to `main`, authenticates to AWS and pushes both images to their respective ECR repositories.
+- Tags published images with the full Git commit SHA (`github.sha`), allowing a deployment to reference a specific source revision.
+- Pull request builds do not attempt AWS authentication or publish images.
+
+A successful build confirms the Docker images can be assembled; it does **not** replace application tests or deployment verification. Automated unit/integration test stages are future improvements.
+
+### Secure AWS authentication — GitHub OIDC
+
+GitHub Actions assumes the IAM role `cloudcart-github-actions-ecr-role` using OpenID Connect (OIDC) and AWS STS. Terraform defines the GitHub OIDC provider, the role's repository/branch-restricted trust policy, and the IAM policies for the workflow. **No long-lived AWS access keys are stored in GitHub for this integration.**
+
+The role has permissions scoped to the CloudCart workflow's needs: ECR image publishing and inspection, registering task definitions, describing/updating the two ECS services, and passing the ECS task execution role. Registration requires the `Project=cloudcart-microservices` request tag, with tagging permission restricted to task-definition creation.
+
+The trust policy controls **who** can assume the role; IAM permissions control **what** that role can do after authentication.
+
+### Manual ECS delivery — `deploy.yml`
+
+The deployment workflow uses `workflow_dispatch`, so an operator explicitly starts it from GitHub Actions. This keeps publishing an image separate from releasing it to the running environment.
+
+1. Check out the selected repository revision and assume the GitHub Actions AWS IAM role through OIDC.
+2. Verify that the Product and Order images exist in ECR under the selected commit SHA.
+3. Retrieve each service's existing ECS task definition and change only its container image URI, preserving environment variables, Secrets Manager references, port mappings, and logging settings.
+4. Register a new task definition revision with the required project tag.
+5. Update the corresponding ECS service and wait for it to stabilize; deploy Product Service before Order Service.
+6. Verify the public endpoints through the ALB after deployment.
+
+```text
+Push to main
+    |
+    v
+GitHub Actions CI ---> Build Product + Order images
+    |                           |
+    |                           v
+    |                    Amazon ECR (SHA tags)
+    |                           |
+    +---- Manual deploy --------+
+                                |
+                                v
+                     GitHub Actions + OIDC
+                                |
+                                v
+                     New ECS task revisions
+                                |
+                                v
+                     ECS Fargate services
+                                |
+                                v
+                     ALB endpoint checks
+```
+
+**Validated outcome:** The deployment workflow completed successfully, both ECS services stabilized, and subsequent requests to `GET /products` and `GET /orders` returned HTTP `200` through the ALB. These endpoint checks were performed manually after deployment; automated post-deployment HTTP smoke tests and rollback are not yet implemented.
+
+**Current limitation:** This is manually triggered continuous delivery, **not** automatic deployment on every push. The workflow deploys services sequentially, but does not provide an atomic two-service release or automated rollback if a later step fails.
+
 ## Troubleshooting and operational lessons
 
 ### Alembic configuration interpolation
@@ -276,6 +343,18 @@ A failed migration exposed sensitive database connection information in CloudWat
 
 **Lesson:** Avoid logging credentials or full database connection strings. Rotating a credential does not automatically remove previously logged sensitive values; historical log review and remediation remain important.
 
+### GitHub Actions deployment permissions
+
+**Issue:** The first deployment run passed an invalid ECR image tag because the GitHub SHA expression had been encoded incorrectly in the workflow YAML.
+
+**Fix:** Corrected the `IMAGE_TAG: ${{ github.sha }}` expression and rebuilt images for the new commit.
+
+**Issue:** A subsequent deployment failed with `AccessDeniedException` on `ecr:DescribeImages` even though GitHub Actions had authenticated to AWS successfully.
+
+**Fix:** Added `ecr:DescribeImages` to the repository-scoped ECR IAM policy using Terraform. After applying the permission change, the manual ECS deployment succeeded.
+
+**Lesson:** Authentication through OIDC and authorization through IAM are separate checks. A successful AWS role assumption does not imply permission to perform every ECR or ECS API operation.
+
 ### Terraform validation versus runtime validation
 
 A successful `terraform validate` or `terraform plan` confirms configuration validity or proposed infrastructure changes—not that an application can start, reach its dependencies, or serve requests. Runtime validation required checking ECR image availability, IAM permissions, Secrets Manager injection, ECS events, networking, database migrations, target health, and end-to-end HTTP behavior.
@@ -292,7 +371,7 @@ Terraform manages the AWS infrastructure, including:
 - ECS Service Connect configuration
 - ECR repositories
 - RDS PostgreSQL and DB subnet group
-- IAM execution role and Secrets Manager permissions
+- IAM execution role, Secrets Manager permissions, GitHub OIDC provider, and GitHub Actions CI/CD role/policies
 - CloudWatch log groups
 - Resource tagging and outputs
 
@@ -321,24 +400,27 @@ terraform apply
 | RDS-managed secret | Avoids embedding the master password in Terraform source |
 | CloudWatch logging | Supports deployment troubleshooting and application diagnostics |
 | Terraform-managed infrastructure | Provides reviewable, repeatable configuration |
-| Mutable `latest` image tags | Convenient for development; immutable versions are planned |
+| Git commit SHA image tags for CI/CD | Traceable deployment image references; the original Terraform task definition resources still specify `latest` |
+| Manually triggered deployments | Allows operator review before release; not automatic continuous deployment |
+| GitHub OIDC rather than stored access keys | Uses short-lived credentials with repository/branch-scoped trust and IAM permissions |
+| Terraform ignores ECS service task-definition drift | Prevents reverting GitHub Actions releases; task-definition resource changes still need coordination |
 | HTTP-only ALB | Simple initial testing; HTTPS/TLS is a required hardening step |
 
 ## Security and current limitations
 
 CloudCart is a **development and learning environment**, not a production-ready commerce application.
 
-Current controls include private application and database networking, scoped security group traffic, IAM execution permissions, Secrets Manager integration, and CloudWatch logging.
+Current controls include private application and database networking, scoped security group traffic, IAM execution permissions, GitHub OIDC with scoped deployment policies, Secrets Manager integration, and CloudWatch logging.
 
 Known gaps and next improvements include:
 
 - Add HTTPS/TLS and API authentication/authorization.
 - Use dedicated, least-privilege database users instead of master credentials for application connections.
 - Review historical logs for exposed secrets and improve sensitive-data redaction.
-- Introduce immutable image versions and automated deployment verification.
+- Add automated post-deployment smoke tests, deployment circuit breaker/rollback safeguards, and broader automated application testing.
 - Improve monitoring, alerting, backup/recovery testing, and resilience.
 - Implement inventory reservation/decrement and stronger order consistency guarantees.
-- Reconcile Terraform-defined desired task counts with the live ECS configuration.
+- Coordinate future Terraform task-definition changes with GitHub Actions-managed ECS releases.
 
 **Cost:** The deployed ALB, NAT Gateway, Fargate tasks, RDS, and other AWS resources may incur charges even when idle. AWS Budgets alerts do not automatically cap spending.
 
@@ -349,11 +431,16 @@ cloudcart-microservices/
 ├── README.md
 ├── compose.yaml
 ├── .gitignore
+├── .github/
+│   └── workflows/
+│       ├── ci.yml
+│       └── deploy.yml
 ├── terraform/
 │   ├── cloudwatch.tf
 │   ├── data.tf
 │   ├── ecr.tf
 │   ├── ecs.tf
+│   ├── github-oidc.tf
 │   ├── iam.tf
 │   ├── internet-gateway.tf
 │   ├── load-balancer.tf
@@ -405,7 +492,7 @@ cloudcart-microservices/
 | Security | IAM, Secrets Manager |
 | Observability | CloudWatch Logs |
 | Source control | Git, GitHub |
-| Planned automation | GitHub Actions |
+| CI/CD automation | GitHub Actions, GitHub OIDC, AWS STS |
 
 ## Milestones
 
@@ -420,14 +507,16 @@ cloudcart-microservices/
 | ALB routing and target health | Complete |
 | ECS Service Connect communication | Complete |
 | Product and Order API integration tests | Complete |
-| GitHub Actions CI/CD | Planned |
+| GitHub Actions CI builds and ECR publishing | Complete |
+| GitHub Actions OIDC and manually triggered ECS delivery | Complete |
+| Automated deployment smoke tests and rollback | Planned |
 | HTTPS and authentication | Planned |
 | SQS and background Worker Service | Planned |
 | Auto Scaling and advanced observability | Planned |
 
 ## Roadmap
 
-1. **CI/CD:** Use GitHub Actions to build, test, tag, publish, and deploy container images automatically.
+1. **Deployment reliability:** Add automated tests, post-deployment smoke checks, ECS deployment rollback safeguards, and clearer release procedures.
 2. **Security:** Add HTTPS, API authentication, least-privilege database access, and better secret-safe logging.
 3. **Observability:** Introduce CloudWatch alarms, dashboards, and deployment health checks.
 4. **Reliability:** Explore ECS Auto Scaling, recovery testing, and resilient service communication.
@@ -436,4 +525,4 @@ cloudcart-microservices/
 
 ---
 
-**Current milestone:** CloudCart has been deployed to AWS and has successfully processed an end-to-end order across two ECS Fargate services using Service Connect and RDS PostgreSQL. The next major engineering milestone is automated CI/CD with GitHub Actions.
+**Current milestone:** CloudCart runs on AWS, has completed an end-to-end Product/Order workflow using ECS Service Connect and RDS PostgreSQL, and now has working GitHub Actions CI and manually triggered ECS delivery. Next priorities are observability, deployment safeguards, and security hardening.
