@@ -9,59 +9,32 @@ CloudCart is a hands-on cloud engineering project focused on designing, deployin
 ## Architecture
 
 ```text
-
                          Internet
-
                             |
-
                          HTTP :80
-
                             v
-
                   Application Load Balancer
-
                       Public Subnets
-
                             |
-
                 +-----------+-----------+
-
                 |                       |
-
            /products*                /orders*
-
                 |                       |
-
                 v                       v
-
           Product Service          Order Service
-
             ECS Fargate             ECS Fargate
-
                 ^                       |
-
                 |                       |
-
                 +---- ECS Service ------+
-
                        Connect
-
                 (product-service:8000)
-
                 |                       |
-
                 +-----------+-----------+
-
                             |
-
                        TCP 5432
-
                             v
-
                    Amazon RDS PostgreSQL
-
                     Private DB Subnets
-
 ```
 
 The deployment pipeline runs separately: GitHub Actions builds Docker images, publishes commit-SHA-tagged images to Amazon ECR, and deploys selected revisions to ECS using short-lived AWS credentials obtained through OIDC.
@@ -146,9 +119,7 @@ Order Service owns the PostgreSQL `orders` table. New orders start with the stat
 Order Service connects to Product Service through the stable ECS Service Connect endpoint:
 
 ```text
-
 http://product-service:8000
-
 ```
 
 The URL is supplied through `PRODUCT_SERVICE_URL`. This avoids hardcoding ECS task IP addresses. If the Product Service cannot be reached, Order Service handles the connection error and returns HTTP `503 Service Unavailable` rather than crashing.
@@ -168,23 +139,14 @@ Docker Compose runs three containers:
 From the repository root:
 
 ```bash
-
 # Build and start containers
-
 docker compose up -d --build
-
 # Inspect container status
-
 docker compose ps
-
 # Review logs
-
 docker compose logs
-
 # Stop containers without deleting the persistent database volume
-
 docker compose down
-
 ```
 
 PostgreSQL uses a persistent Docker volume. The same application images can run locally and in AWS because database configuration is provided through environment variables. AWS task definitions inject database credentials through Secrets Manager.
@@ -245,11 +207,8 @@ Terraform defines `desired_count = 1` for both services. The ECS service resourc
 The ALB routes:
 
 ```text
-
 /products*  -> Product Service target group
-
 /orders*    -> Order Service target group
-
 ```
 
 Both target groups use HTTP on port `8000` and check `GET /health`. Healthy targets were confirmed during deployment testing.
@@ -276,41 +235,25 @@ Both target groups use HTTP on port `8000` and check `GET /health`. Healthy targ
 **Order creation:** `POST /orders` requested two units of that product. Order Service retrieved the product details through Service Connect and returned:
 
 ```json
-
 {
-
   "quantity": 2,
-
   "product_name": "CloudCart Test Product",
-
   "unit_price": 29.99,
-
   "total": 59.98,
-
   "status": "pending"
-
 }
-
 ```
 
 The successful order demonstrated the complete request path:
 
 ```text
-
 Client -> ALB -> Order Service -> ECS Service Connect -> Product Service
-
                                                         |
-
                                                         v
-
                                                  RDS product data
-
                                                         |
-
                                                         v
-
 Client <- HTTP 201 <- Order Service -> RDS order data
-
 ```
 
 ## CI/CD with GitHub Actions
@@ -356,46 +299,27 @@ The deployment workflow uses `workflow_dispatch`, so an operator explicitly star
 6. Verify the public endpoints through the ALB after deployment.
 
 ```text
-
 Push to main
-
     |
-
     v
-
 GitHub Actions CI ---> Build Product + Order images
-
     |                           |
     |                           v
     |                    Amazon ECR (SHA tags)
     |                           |
-
     +---- Manual deploy --------+
-
                                 |
-
                                 v
-
                      GitHub Actions + OIDC
-
                                 |
-
                                 v
-
                      New ECS task revisions
-
                                 |
-
                                 v
-
                      ECS Fargate services
-
                                 |
-
                                 v
-
                      ALB endpoint checks
-
 ```
 
 **Validated outcome:** The deployment workflow completed successfully, both ECS services stabilized, and subsequent requests to `GET /products` and `GET /orders` returned HTTP `200` through the ALB. These endpoint checks were performed manually after deployment; automated post-deployment HTTP smoke tests remain future work. ECS deployment circuit-breaker rollback has been implemented and separately validated through a controlled failure test.
@@ -470,15 +394,10 @@ After monitoring and rollback validation, the development AWS environment was in
 **Fix:** Updated both services' Alembic environments to escape percent signs before setting the SQLAlchemy URL:
 
 ```python
-
 config.set_main_option(
-
     "sqlalchemy.url",
-
     DATABASE_URL.replace("%", "%%"),
-
 )
-
 ```
 
 Both migration sets subsequently completed against RDS.
@@ -545,17 +464,11 @@ Terraform manages the AWS infrastructure, including:
 Common Terraform workflow, from the `terraform/` directory:
 
 ```bash
-
 terraform fmt
-
 terraform validate
-
 terraform plan
-
 # Review the plan carefully before applying changes.
-
 terraform apply
-
 ```
 
 **Caution:** Deploying this configuration creates billable AWS resources; the environment is currently destroyed. Review plans and state before changing or destroying resources. Avoid committing Terraform state, secrets, or local credentials.
@@ -608,109 +521,57 @@ Known gaps and next improvements include:
 ## Repository structure
 
 ```text
-
 cloudcart-microservices/
-
 ├── README.md
-
 ├── compose.yaml
-
 ├── .gitignore
-
 ├── .github/
-
 │   └── workflows/
-
 │       ├── ci.yml
-
 │       └── deploy.yml
-
 ├── terraform/
-
 │   ├── cloudwatch.tf
-
 │   ├── data.tf
-
 │   ├── ecr.tf
-
 │   ├── ecs.tf
-
 │   ├── github-oidc.tf
-
 │   ├── iam.tf
-
 │   ├── internet-gateway.tf
-
 │   ├── load-balancer.tf
-
 │   ├── locals.tf
-
 │   ├── nat-gateway.tf
-
 │   ├── outputs.tf
-
 │   ├── providers.tf
-
 │   ├── rds.tf
-
 │   ├── route-tables.tf
-
 │   ├── security-groups.tf
-
 │   ├── service-connect.tf
-
 │   └── vpc.tf
-
 └── services/
-
     ├── product-service/
-
     │   ├── Dockerfile
-
     │   ├── .dockerignore
-
     │   ├── requirements.txt
-
     │   ├── alembic.ini
-
     │   ├── app/
-
     │   │   ├── main.py
-
     │   │   ├── database.py
-
     │   │   └── models.py
-
     │   └── migrations/
-
     │       ├── env.py
-
     │       └── versions/
-
     └── order-service/
-
         ├── Dockerfile
-
         ├── .dockerignore
-
         ├── requirements.txt
-
         ├── alembic.ini
-
         ├── app/
-
         │   ├── main.py
-
         │   ├── database.py
-
         │   └── models.py
-
         └── migrations/
-
             ├── env.py
-
             └── versions/
-
 ```
 
 ## Technology stack
