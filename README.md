@@ -147,7 +147,7 @@ Order Service connects to Product Service through the stable ECS Service Connect
 
 ```text
 
-http\://product-service:8000
+http://product-service:8000
 
 ```
 
