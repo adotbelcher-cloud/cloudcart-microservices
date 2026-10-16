@@ -2,6 +2,7 @@
 resource "aws_ecr_repository" "cloudcart_product_service" {
   name                 = "cloudcart-product-service"
   image_tag_mutability = "MUTABLE"
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
@@ -18,6 +19,7 @@ resource "aws_ecr_repository" "cloudcart_product_service" {
 resource "aws_ecr_repository" "cloudcart_order_service" {
   name                 = "cloudcart-order-service"
   image_tag_mutability = "MUTABLE"
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true

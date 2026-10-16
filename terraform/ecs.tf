@@ -162,6 +162,12 @@ resource "aws_ecs_service" "cloudcart_order_service" {
     ignore_changes = [task_definition]
   }
 
+  # Enable deployment circuit breaker to automatically roll back failed deployments.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   # Register Order Service tasks with the ALB target group.
   # The ALB forwards matching /orders requests to container port 8000.
   load_balancer {
@@ -209,6 +215,12 @@ resource "aws_ecs_service" "cloudcart_product_service" {
 
   lifecycle {
     ignore_changes = [task_definition]
+  }
+
+  # Enable deployment circuit breaker to automatically roll back failed deployments.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
   }
 
   load_balancer {
