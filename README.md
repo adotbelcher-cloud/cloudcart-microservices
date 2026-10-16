@@ -71,32 +71,19 @@ Both application services run in **private application subnets without public IP
 ### AWS services
 
 | Component | Purpose |
-
 |---|---|
-
 | Amazon ECS / AWS Fargate | Runs the Product and Order containers |
-
 | Amazon ECR | Stores container images |
-
 | Application Load Balancer | Routes `/products*` and `/orders*` traffic |
-
 | Amazon VPC | Isolates public, application, and database tiers |
-
 | NAT Gateway | Enables outbound traffic from private ECS tasks |
-
 | ECS Service Connect | Provides internal service discovery |
-
 | Amazon RDS PostgreSQL | Stores product and order data |
-
 | AWS Secrets Manager | Manages the RDS master credential |
-
 | AWS IAM / STS | Grants ECS execution permissions and temporary GitHub Actions deployment credentials |
-
 | Amazon CloudWatch | Collects application logs, displays infrastructure metrics, and evaluates service-health alarms |
 | Amazon SNS | Delivers email notifications for CloudWatch alarm transitions |
-
 | Terraform | Provisions and manages AWS infrastructure |
-
 | GitHub Actions | Builds and publishes container images; manually deploys ECS service revisions |
 
 ## Network design
@@ -104,13 +91,9 @@ Both application services run in **private application subnets without public IP
 The dedicated VPC uses `10.0.0.0/16`, with six subnets across two Availability Zones.
 
 | Tier | Availability Zone A | Availability Zone B |
-
 |---|---|---|
-
 | Public | `10.0.1.0/24` | `10.0.2.0/24` |
-
 | Private application | `10.0.11.0/24` | `10.0.12.0/24` |
-
 | Private database | `10.0.21.0/24` | `10.0.22.0/24` |
 
 The public subnets host the ALB and NAT Gateway. ECS tasks use private application subnets and are not directly reachable from the internet. RDS uses private database subnets and has public accessibility disabled.
@@ -118,15 +101,10 @@ The public subnets host the ALB and NAT Gateway. ECS tasks use private applicati
 ### Security group traffic
 
 | Source | Destination | Port | Purpose |
-
 |---|---|---|---|
-
 | Internet | ALB | TCP 80 | Public API access |
-
 | ALB security group | ECS security group | TCP 8000 | Requests to application containers |
-
 | ECS security group | ECS security group | TCP 8000 | Internal service traffic |
-
 | ECS security group | RDS security group | TCP 5432 | PostgreSQL connections |
 
 Security group references restrict access between tiers rather than exposing application or database ports to the public internet.
@@ -140,15 +118,10 @@ CloudCart has two FastAPI services, each with its own Docker image, ECS service,
 Product Service owns product data, including name, description, price, and inventory.
 
 | Method | Endpoint | Purpose |
-
 |---|---|---|
-
 | GET | `/health` | Health check |
-
 | GET | `/products` | List products |
-
 | GET | `/products/{product_id}` | Retrieve a product |
-
 | POST | `/products` | Create a product |
 
 Product Service owns the PostgreSQL `products` table.
@@ -158,15 +131,10 @@ Product Service owns the PostgreSQL `products` table.
 Order Service accepts an order request, looks up the product through Product Service, checks the requested quantity against inventory, calculates the total, and saves the order.
 
 | Method | Endpoint | Purpose |
-
 |---|---|---|
-
 | GET | `/health` | Health check |
-
 | GET | `/orders` | List orders |
-
 | GET | `/orders/{order_id}` | Retrieve an order |
-
 | POST | `/orders` | Create an order |
 
 Order Service owns the PostgreSQL `orders` table. New orders start with the status `pending`.
@@ -226,21 +194,13 @@ PostgreSQL uses a persistent Docker volume. The same application images can run 
 CloudCart uses **Amazon RDS PostgreSQL** with the following initial development configuration:
 
 | Setting | Value |
-
 |---|---|
-
 | Engine | PostgreSQL 17.11 |
-
 | Instance class | `db.t3.micro` |
-
 | Initial storage | 20 GiB, gp2 |
-
 | Database | `cloudcart` |
-
 | Public accessibility | Disabled |
-
 | Multi-AZ database deployment | Disabled |
-
 | Backup retention | 1 day |
 
 Both services share one database instance to control costs while retaining logical table ownership.
@@ -248,11 +208,8 @@ Both services share one database instance to control costs while retaining logic
 **Alembic migrations** manage schema creation and changes independently:
 
 | Service | Owned table | Migration history table |
-
 |---|---|---|
-
 | Product | `products` | `alembic_version_product` |
-
 | Order | `orders` | `alembic_version_order` |
 
 Migrations were validated against a fresh local PostgreSQL 17 database. Both services' migrations were then executed against private RDS using **one-off ECS Fargate tasks**. They completed successfully with exit code `0`, verified in CloudWatch logs.
@@ -300,31 +257,18 @@ Both target groups use HTTP on port `8000` and check `GET /health`. Healthy targ
 ### Validated end-to-end tests
 
 | Test | Result |
-
 |---|---|
-
 | Build and push both Docker images to ECR | Successful |
-
 | GitHub Actions CI builds and publishes commit-SHA-tagged images | Successful |
-
 | GitHub Actions OIDC authentication and manual ECS deployment | Successful |
-
 | Post-deployment GET `/products` and GET `/orders` through ALB | HTTP 200 for both |
-
 | Start Product and Order tasks on Fargate | Successful |
-
 | Run Product and Order migrations against RDS | Successful |
-
 | Confirm ALB target health | Healthy |
-
 | Route `/products` and `/orders` through ALB | HTTP 200 |
-
 | Create a product through the ALB | HTTP 201 |
-
 | Create an order using Product Service data | HTTP 201 |
-
 | Communicate between services through Service Connect | Successful |
-
 | Persist product and order data in PostgreSQL | Successful |
 
 **Product creation:** `POST /products` created a product named `CloudCart Test Product` with a price of `$29.99` and inventory of `10`.
@@ -422,11 +366,8 @@ Push to main
 GitHub Actions CI ---> Build Product + Order images
 
     |                           |
-
     |                           v
-
     |                    Amazon ECR (SHA tags)
-
     |                           |
 
     +---- Manual deploy --------+
@@ -622,37 +563,22 @@ terraform apply
 ## Engineering decisions and trade-offs
 
 | Decision | Rationale / trade-off |
-
 |---|---|
-
 | Private ECS tasks behind a public ALB | Prevents direct internet access to application tasks |
-
 | Private RDS database | Restricts direct database exposure |
-
 | One NAT Gateway | Lower cost than per-AZ NAT; less resilient to AZ failure |
-
 | Fargate instead of EC2-backed ECS | Avoids managing container host instances |
-
 | Shared RDS instance | Controls cost; logical table ownership maintained per service |
-
 | Independent Alembic histories | Allows service-owned schema changes |
-
 | RDS-managed secret | Avoids embedding the master password in Terraform source |
-
 | CloudWatch logging, metrics, and alarms | Supports deployment troubleshooting, health monitoring, and notification of unhealthy services |
 | ECS deployment circuit breaker | Automatically rolls back failed rolling deployments to a previous completed revision |
 | Terraform destroy and rebuild planning | Reduces idle infrastructure costs while preserving reproducible IaC |
-
 | Terraform-managed infrastructure | Provides reviewable, repeatable configuration |
-
 | Git commit SHA image tags for CI/CD | Traceable deployment image references; the original Terraform task definition resources still specify `latest` |
-
 | Manually triggered deployments | Allows operator review before release; not automatic continuous deployment |
-
 | GitHub OIDC rather than stored access keys | Uses short-lived credentials with repository/branch-scoped trust and IAM permissions |
-
 | Terraform ignores ECS service task-definition drift | Prevents reverting GitHub Actions releases; task-definition resource changes still need coordination |
-
 | HTTP-only ALB | Simple initial testing; HTTPS/TLS is a required hardening step |
 
 ## Security and current limitations
@@ -790,64 +716,38 @@ cloudcart-microservices/
 ## Technology stack
 
 | Area | Technologies |
-
 |---|---|
-
 | Cloud infrastructure | AWS, Terraform |
-
 | Containers | Docker, Docker Compose, ECS, Fargate, ECR |
-
 | Networking | VPC, ALB, NAT Gateway, security groups, Service Connect |
-
 | Database | PostgreSQL, RDS, SQLAlchemy, Alembic |
-
 | Application workload | Python, FastAPI, Pydantic, HTTPX |
-
 | Security | IAM, Secrets Manager |
-
 | Observability | CloudWatch Logs, CloudWatch dashboards and alarms, Amazon SNS |
-
 | Source control | Git, GitHub |
-
 | CI/CD automation | GitHub Actions, GitHub OIDC, AWS STS |
 
 ## Milestones
 
 | Milestone | Status |
-
 |---|---|
-
 | Local Product and Order services | Complete |
-
 | Docker Compose and PostgreSQL persistence | Complete |
-
 | Independent Alembic migrations | Complete |
-
 | Terraform VPC, ECS, ALB, and RDS deployment | Complete (initial environment) |
-
 | ECR image publishing | Complete |
-
 | RDS schema initialization from ECS tasks | Complete |
-
 | ALB routing and target health | Complete |
-
 | ECS Service Connect communication | Complete |
-
 | Product and Order API integration tests | Complete |
-
 | GitHub Actions CI builds and ECR publishing | Complete |
-
 | GitHub Actions OIDC and manually triggered ECS delivery | Complete |
-
 | ECS deployment circuit breaker and automatic rollback | Complete — tested with failed image deployment |
 | Automated post-deployment smoke tests and workflow-level rollback | Planned |
 | CloudWatch dashboard, health alarms, and SNS email alerts | Complete — notification path tested |
 | Terraform teardown and redeployment planning | Complete — 58 resources destroyed, rebuild plan verified |
-
 | HTTPS and authentication | Planned |
-
 | SQS and background Worker Service | Planned |
-
 | Auto Scaling and advanced observability | Planned |
 
 ## Roadmap
